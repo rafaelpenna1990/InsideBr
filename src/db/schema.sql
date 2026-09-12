@@ -52,6 +52,20 @@ CREATE TABLE IF NOT EXISTS buybacks (
 CREATE INDEX IF NOT EXISTS idx_buybacks_company ON buybacks(company_id);
 CREATE INDEX IF NOT EXISTS idx_buybacks_date ON buybacks(transaction_date);
 
+CREATE TABLE IF NOT EXISTS corporate_events (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER REFERENCES companies(id),
+  subject TEXT,
+  reference_date DATE,
+  filed_date DATE,
+  document_url TEXT,
+  raw_hash VARCHAR(64) UNIQUE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_company ON corporate_events(company_id);
+CREATE INDEX IF NOT EXISTS idx_events_filed_date ON corporate_events(filed_date);
+
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
