@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "inspect-cvm": "node src/ingest/inspectVlmo.js",
+    "inspect-recompra": "node src/ingest/inspectRecompra.js",
     "ingest": "node src/ingest/fetchVlmo.js",
     "map-tickers": "node src/ingest/mapTickers.js",
     "fix-tickers": "node src/db/fixTickers.js",
