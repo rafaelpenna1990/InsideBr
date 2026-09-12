@@ -10,6 +10,7 @@
     "inspect-cvm": "node src/ingest/inspectVlmo.js",
     "ingest": "node src/ingest/fetchVlmo.js",
     "map-tickers": "node src/ingest/mapTickers.js",
+    "fix-tickers": "node src/db/fixTickers.js",
     "migrate": "node src/db/migrate.js"
   },
   "dependencies": {
