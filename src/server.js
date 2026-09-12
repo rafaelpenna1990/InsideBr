@@ -33,10 +33,41 @@ app.get("/api/transactions/recent", async (req, res) => {
       SELECT t.*, c.name AS company_name, c.cnpj, c.ticker
       FROM transactions t
       JOIN companies c ON c.id = t.company_id
-      ORDER BY t.filed_date DESC NULLS LAST, t.id DESC
+      ORDER BY t.transaction_date DESC NULLS LAST, t.id DESC
       LIMIT 50
     `);
     res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/stats", async (req, res) => {
+  try {
+    const totals = await pool.query(`
+      SELECT
+        operation_type,
+        COUNT(*) AS total,
+        SUM(total_value) AS valor_total
+      FROM transactions
+      GROUP BY operation_type
+    `);
+
+    const companies = await pool.query(`
+      SELECT COUNT(DISTINCT company_id) AS empresas_com_negociacao
+      FROM transactions
+    `);
+
+    const dateRange = await pool.query(`
+      SELECT MIN(transaction_date) AS mais_antiga, MAX(transaction_date) AS mais_recente
+      FROM transactions
+    `);
+
+    res.json({
+      por_tipo_operacao: totals.rows,
+      empresas_com_negociacao: companies.rows[0].empresas_com_negociacao,
+      periodo: dateRange.rows[0],
+    });
   } catch (err) {
     res.status(500).json({ status: "erro", message: err.message });
   }
