@@ -74,11 +74,17 @@ async function getMarketQuotes() {
   return quotes;
 }
 
+// O plano gratuito da brapi limita histórico a ~3 meses e não libera
+// granularidade intraday (15m/60m) de forma confiável — então sempre
+// buscamos o máximo disponível (3 meses, diário) UMA vez só. Os botões
+// de período no app recortam esse mesmo conjunto de pontos, em vez de
+// pedir de novo pra API a cada clique.
 const historyCache = new Map();
 const HISTORY_CACHE_TTL_MS = 15 * 60 * 1000;
 
 app.get("/api/market/history/:ticker", async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
+
   const cached = historyCache.get(ticker);
   if (cached && Date.now() - cached.fetchedAt < HISTORY_CACHE_TTL_MS) {
     return res.json(cached.data);
