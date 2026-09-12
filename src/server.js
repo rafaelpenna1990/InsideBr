@@ -379,6 +379,8 @@ app.get("/api/radar", async (req, res) => {
         if (!company || !company.ticker) return null; // sem ticker, não dá pra linkar na UI
 
         const recentValue = Number(r.recent_value) || 0;
+        if (recentValue <= 0) return null; // sem preço informado na fonte — não é sinal de verdade
+
         const recentRoles = Number(r.recent_roles) || 0;
         const avgMonthly = avgByCompany.get(r.company_id) || 0;
         // Se não tem histórico prévio, considera "infinitamente acima da média"
