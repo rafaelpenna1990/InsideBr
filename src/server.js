@@ -42,6 +42,31 @@ app.get("/api/transactions/recent", async (req, res) => {
   }
 });
 
+app.get("/api/companies/search", async (req, res) => {
+  const query = (req.query.q || "").trim();
+  if (query.length < 1) return res.json([]);
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT DISTINCT c.name AS company_name, c.ticker, c.cnpj
+      FROM companies c
+      JOIN transactions t ON t.company_id = c.id
+      WHERE c.ticker IS NOT NULL
+        AND (c.ticker ILIKE $1 OR c.name ILIKE $1)
+      ORDER BY
+        CASE WHEN c.ticker ILIKE $2 THEN 0 ELSE 1 END,
+        c.name
+      LIMIT 15
+      `,
+      [`%${query}%`, `${query}%`]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/stats", async (req, res) => {
   try {
     const totals = await pool.query(`
