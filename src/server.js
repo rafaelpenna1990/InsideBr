@@ -291,6 +291,41 @@ app.get("/api/ranking/roles", async (req, res) => {
   }
 });
 
+app.get("/api/events/recent", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT e.*, c.name AS company_name, c.ticker, c.cnpj
+      FROM corporate_events e
+      JOIN companies c ON c.id = e.company_id
+      WHERE c.ticker IS NOT NULL
+      ORDER BY e.filed_date DESC NULLS LAST, e.id DESC
+      LIMIT 30
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/companies/:cnpj/events", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT e.*, c.name AS company_name, c.ticker, c.cnpj
+      FROM corporate_events e
+      JOIN companies c ON c.id = e.company_id
+      WHERE c.cnpj = $1
+      ORDER BY e.filed_date DESC NULLS LAST, e.id DESC
+      LIMIT 20
+      `,
+      [req.params.cnpj]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/radar", async (req, res) => {
   try {
     const windowDays = Number(req.query.days) || 21;
