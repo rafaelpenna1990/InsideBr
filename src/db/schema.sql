@@ -34,6 +34,24 @@ CREATE INDEX IF NOT EXISTS idx_transactions_company ON transactions(company_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_role ON transactions(role_category);
 CREATE INDEX IF NOT EXISTS idx_transactions_filed_date ON transactions(filed_date);
 
+CREATE TABLE IF NOT EXISTS buybacks (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER REFERENCES companies(id),
+  operation_type VARCHAR(10),
+  asset_type VARCHAR(50),
+  quantity NUMERIC,
+  unit_price NUMERIC,
+  total_value NUMERIC,
+  transaction_date DATE,
+  filed_date DATE,
+  raw_hash VARCHAR(64) UNIQUE,
+  raw_data JSONB,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_buybacks_company ON buybacks(company_id);
+CREATE INDEX IF NOT EXISTS idx_buybacks_date ON buybacks(transaction_date);
+
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
