@@ -42,6 +42,61 @@ app.get("/api/transactions/recent", async (req, res) => {
   }
 });
 
+// Cache simples em memória pra não estourar o limite gratuito da brapi
+// a cada abertura do app — atualiza no máximo a cada 5 minutos.
+let marketCache = { data: null, fetchedAt: 0 };
+const MARKET_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function getMarketQuotes() {
+  const now = Date.now();
+  if (marketCache.data && now - marketCache.fetchedAt < MARKET_CACHE_TTL_MS) {
+    return marketCache.data;
+  }
+
+  const token = process.env.BRAPI_TOKEN;
+  if (!token) throw new Error("BRAPI_TOKEN não configurado");
+
+  const url = `https://brapi.dev/api/quote/list?token=${token}&type=stock`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Falha na brapi (${response.status})`);
+
+  const json = await response.json();
+  const quotes = (json.stocks || [])
+    .map((item) => ({
+      ticker: item.stock,
+      name: item.name,
+      price: item.close ?? item.regularMarketPrice ?? null,
+      changePercent: item.change ?? item.regularMarketChangePercent ?? null,
+    }))
+    .filter((q) => q.price != null && q.changePercent != null);
+
+  marketCache = { data: quotes, fetchedAt: now };
+  return quotes;
+}
+
+app.get("/api/market/summary", async (req, res) => {
+  try {
+    const quotes = await getMarketQuotes();
+
+    // Empresas que a gente já tem no banco entram na fita de cotação
+    const { rows: ourCompanies } = await pool.query(
+      "SELECT DISTINCT ticker FROM companies WHERE ticker IS NOT NULL"
+    );
+    const ourTickers = new Set(ourCompanies.map((c) => c.ticker));
+
+    const tapeCandidates = quotes.filter((q) => ourTickers.has(q.ticker));
+    const tickerTape = (tapeCandidates.length >= 8 ? tapeCandidates : quotes).slice(0, 12);
+
+    const sorted = [...quotes].sort((a, b) => b.changePercent - a.changePercent);
+    const topGainers = sorted.slice(0, 5);
+    const topLosers = sorted.slice(-5).reverse();
+
+    res.json({ tickerTape, topGainers, topLosers, updatedAt: new Date(marketCache.fetchedAt) });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/companies/search", async (req, res) => {
   const query = (req.query.q || "").trim();
   if (query.length < 1) return res.json([]);
