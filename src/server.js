@@ -373,6 +373,8 @@ app.get("/api/radar", async (req, res) => {
     );
     const companyById = new Map(companiesResult.rows.map((c) => [c.id, c]));
 
+    const RADAR_MIN_SCORE = 40; // abaixo disso é "dentro do padrão" — não é achado de radar
+
     const radar = recentResult.rows
       .map((r) => {
         const company = companyById.get(r.company_id);
@@ -388,6 +390,7 @@ app.get("/api/radar", async (req, res) => {
         const multiplier = avgMonthly > 0 ? recentValue / avgMonthly : 10;
 
         const score = computeScore({ recentValue, recentRoles, multiplier });
+        if (score < RADAR_MIN_SCORE) return null; // atividade normal, não entra no radar
 
         return {
           ticker: company.ticker,
