@@ -213,6 +213,230 @@ app.get("/api/companies/search", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// INSIDER RADAR — detecta atividade incomum de compra e calcula
+// um "InsideBR Score" (0-100) medindo o quão fora do padrão está
+// a movimentação. O score mede ATIVIDADE, não probabilidade de
+// alta — importante deixar isso claro em qualquer lugar que exibe.
+// ─────────────────────────────────────────────────────────────
+function computeScore({ recentValue, recentRoles, multiplier }) {
+  const valueScore = Math.min(recentValue / 5_000_000, 1) * 25;
+  const rolesScore = Math.min(recentRoles / 4, 1) * 30;
+  const multiplierScore = Math.min(multiplier / 5, 1) * 30;
+  // Base de 15 pontos só por ter entrado no radar (atividade recente de verdade)
+  const base = 15;
+  return Math.round(Math.min(valueScore + rolesScore + multiplierScore + base, 100));
+}
+
+function scoreLabel(score) {
+  if (score >= 80) return "Atividade muito incomum";
+  if (score >= 60) return "Atividade acima do normal";
+  if (score >= 40) return "Atividade moderada";
+  return "Atividade dentro do padrão";
+}
+
+// ─────────────────────────────────────────────────────────────
+// RANKING — empresas e categorias de cargo com mais atividade de
+// insider (compra), no período pedido (padrão: histórico completo).
+// ─────────────────────────────────────────────────────────────
+app.get("/api/ranking/companies", async (req, res) => {
+  try {
+    const days = req.query.days ? Number(req.query.days) : null;
+    const dateFilter = days ? `AND t.transaction_date >= (CURRENT_DATE - ${Number(days)}::int)` : "";
+
+    const result = await pool.query(`
+      SELECT
+        c.ticker,
+        c.name AS company_name,
+        c.cnpj,
+        SUM(t.total_value) AS total_bought,
+        COUNT(*) AS transaction_count,
+        COUNT(DISTINCT t.role_category) AS distinct_roles
+      FROM transactions t
+      JOIN companies c ON c.id = t.company_id
+      WHERE t.operation_type = 'buy'
+        AND c.ticker IS NOT NULL
+        ${dateFilter}
+      GROUP BY c.ticker, c.name, c.cnpj
+      ORDER BY total_bought DESC
+      LIMIT 20
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/ranking/roles", async (req, res) => {
+  try {
+    const days = req.query.days ? Number(req.query.days) : null;
+    const dateFilter = days ? `AND transaction_date >= (CURRENT_DATE - ${Number(days)}::int)` : "";
+
+    const result = await pool.query(`
+      SELECT
+        role_category,
+        operation_type,
+        SUM(total_value) AS total_value,
+        COUNT(*) AS transaction_count,
+        COUNT(DISTINCT company_id) AS distinct_companies
+      FROM transactions
+      WHERE role_category IS NOT NULL AND role_category != ''
+        ${dateFilter}
+      GROUP BY role_category, operation_type
+      ORDER BY total_value DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/radar", async (req, res) => {
+  try {
+    const windowDays = Number(req.query.days) || 21;
+
+    const recentResult = await pool.query(
+      `
+      SELECT
+        t.company_id,
+        SUM(t.total_value) AS recent_value,
+        COUNT(DISTINCT t.role_category) AS recent_roles,
+        MAX(t.transaction_date) AS last_date,
+        COUNT(*) AS recent_count
+      FROM transactions t
+      WHERE t.operation_type = 'buy'
+        AND t.transaction_date >= (CURRENT_DATE - $1::int)
+      GROUP BY t.company_id
+      `,
+      [windowDays]
+    );
+
+    if (recentResult.rows.length === 0) return res.json([]);
+
+    const companyIds = recentResult.rows.map((r) => r.company_id);
+
+    const historicalResult = await pool.query(
+      `
+      SELECT company_id, AVG(month_value) AS avg_monthly
+      FROM (
+        SELECT company_id, DATE_TRUNC('month', transaction_date) AS month, SUM(total_value) AS month_value
+        FROM transactions
+        WHERE operation_type = 'buy' AND company_id = ANY($1::int[])
+        GROUP BY company_id, DATE_TRUNC('month', transaction_date)
+      ) monthly
+      GROUP BY company_id
+      `,
+      [companyIds]
+    );
+    const avgByCompany = new Map(
+      historicalResult.rows.map((r) => [r.company_id, Number(r.avg_monthly) || 0])
+    );
+
+    const companiesResult = await pool.query(
+      `SELECT id, name, ticker, cnpj FROM companies WHERE id = ANY($1::int[])`,
+      [companyIds]
+    );
+    const companyById = new Map(companiesResult.rows.map((c) => [c.id, c]));
+
+    const radar = recentResult.rows
+      .map((r) => {
+        const company = companyById.get(r.company_id);
+        if (!company || !company.ticker) return null; // sem ticker, não dá pra linkar na UI
+
+        const recentValue = Number(r.recent_value) || 0;
+        const recentRoles = Number(r.recent_roles) || 0;
+        const avgMonthly = avgByCompany.get(r.company_id) || 0;
+        // Se não tem histórico prévio, considera "infinitamente acima da média"
+        // mas usa um teto (10x) pra não distorcer o score
+        const multiplier = avgMonthly > 0 ? recentValue / avgMonthly : 10;
+
+        const score = computeScore({ recentValue, recentRoles, multiplier });
+
+        return {
+          ticker: company.ticker,
+          companyName: company.name,
+          cnpj: company.cnpj,
+          recentValue,
+          recentRoles,
+          recentCount: Number(r.recent_count),
+          avgMonthly,
+          multiplier: Math.round(multiplier * 10) / 10,
+          lastDate: r.last_date,
+          score,
+          label: scoreLabel(score),
+          type: recentRoles >= 3 ? "cluster" : "unusual",
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+
+    res.json(radar);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/companies/:cnpj/score", async (req, res) => {
+  try {
+    const windowDays = Number(req.query.days) || 21;
+
+    const companyResult = await pool.query(
+      "SELECT id, name, ticker, cnpj FROM companies WHERE cnpj = $1",
+      [req.params.cnpj]
+    );
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    const company = companyResult.rows[0];
+
+    const recentResult = await pool.query(
+      `
+      SELECT
+        COALESCE(SUM(total_value), 0) AS recent_value,
+        COUNT(DISTINCT role_category) AS recent_roles
+      FROM transactions
+      WHERE company_id = $1
+        AND operation_type = 'buy'
+        AND transaction_date >= (CURRENT_DATE - $2::int)
+      `,
+      [company.id, windowDays]
+    );
+    const { recent_value, recent_roles } = recentResult.rows[0];
+
+    const historicalResult = await pool.query(
+      `
+      SELECT AVG(month_value) AS avg_monthly
+      FROM (
+        SELECT DATE_TRUNC('month', transaction_date) AS month, SUM(total_value) AS month_value
+        FROM transactions
+        WHERE operation_type = 'buy' AND company_id = $1
+        GROUP BY DATE_TRUNC('month', transaction_date)
+      ) monthly
+      `,
+      [company.id]
+    );
+    const avgMonthly = Number(historicalResult.rows[0].avg_monthly) || 0;
+
+    const recentValue = Number(recent_value);
+    const recentRoles = Number(recent_roles);
+    const multiplier = avgMonthly > 0 ? recentValue / avgMonthly : recentValue > 0 ? 10 : 0;
+    const score = computeScore({ recentValue, recentRoles, multiplier });
+
+    res.json({
+      ticker: company.ticker,
+      companyName: company.name,
+      score,
+      label: scoreLabel(score),
+      recentValue,
+      recentRoles,
+      avgMonthly,
+      multiplier: Math.round(multiplier * 10) / 10,
+    });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/stats", async (req, res) => {
   try {
     const totals = await pool.query(`
