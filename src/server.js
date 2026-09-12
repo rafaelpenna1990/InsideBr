@@ -375,6 +375,14 @@ app.get("/api/radar", async (req, res) => {
 
     const RADAR_MIN_SCORE = 40; // abaixo disso é "dentro do padrão" — não é achado de radar
 
+    // Total comprado no período conta TUDO (mesmo o que não entra no radar
+    // por ter score baixo) — é uma métrica diferente, não deve cair pra R$0
+    // só porque nada foi "incomum" o suficiente nesse momento.
+    const totalBoughtPeriod = recentResult.rows.reduce(
+      (sum, r) => sum + (Number(r.recent_value) || 0),
+      0
+    );
+
     const radar = recentResult.rows
       .map((r) => {
         const company = companyById.get(r.company_id);
@@ -410,7 +418,7 @@ app.get("/api/radar", async (req, res) => {
       .filter(Boolean)
       .sort((a, b) => b.score - a.score);
 
-    res.json(radar);
+    res.json({ items: radar, totalBoughtPeriod });
   } catch (err) {
     res.status(500).json({ status: "erro", message: err.message });
   }
