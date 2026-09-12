@@ -74,6 +74,91 @@ async function getMarketQuotes() {
   return quotes;
 }
 
+const historyCache = new Map();
+const HISTORY_CACHE_TTL_MS = 15 * 60 * 1000;
+
+app.get("/api/market/history/:ticker", async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  const cached = historyCache.get(ticker);
+  if (cached && Date.now() - cached.fetchedAt < HISTORY_CACHE_TTL_MS) {
+    return res.json(cached.data);
+  }
+
+  try {
+    const token = process.env.BRAPI_TOKEN;
+    const url = `https://brapi.dev/api/quote/${ticker}?token=${token}&range=3mo&interval=1d`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Falha na brapi (${response.status})`);
+
+    const json = await response.json();
+    const result = (json.results || [])[0];
+    if (!result) return res.json({ points: [] });
+
+    const points = (result.historicalDataPrice || []).map((p) => ({
+      date: p.date, // timestamp unix
+      close: p.close,
+    }));
+
+    const payload = {
+      points,
+      currentPrice: result.regularMarketPrice ?? null,
+      changePercent: result.regularMarketChangePercent ?? null,
+      name: result.shortName || result.longName || ticker,
+    };
+
+    historyCache.set(ticker, { data: payload, fetchedAt: Date.now() });
+    res.json(payload);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/companies/by-ticker/:ticker", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT c.name AS company_name, c.ticker, c.cnpj
+      FROM companies c
+      WHERE c.ticker = $1
+        AND EXISTS (SELECT 1 FROM transactions t WHERE t.company_id = c.id)
+      LIMIT 1
+      `,
+      [req.params.ticker]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/market/search", async (req, res) => {
+  const query = (req.query.q || "").trim().toLowerCase();
+  if (query.length < 1) return res.json([]);
+
+  try {
+    const quotes = await getMarketQuotes();
+    const matches = quotes
+      .filter(
+        (q) =>
+          q.ticker.toLowerCase().includes(query) ||
+          (q.name && q.name.toLowerCase().includes(query))
+      )
+      .sort((a, b) => {
+        const aStarts = a.ticker.toLowerCase().startsWith(query) ? 0 : 1;
+        const bStarts = b.ticker.toLowerCase().startsWith(query) ? 0 : 1;
+        return aStarts - bStarts;
+      })
+      .slice(0, 20);
+
+    res.json(matches);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/market/summary", async (req, res) => {
   try {
     const quotes = await getMarketQuotes();
