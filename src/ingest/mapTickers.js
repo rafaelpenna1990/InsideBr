@@ -89,8 +89,7 @@ async function fetchAllTickers() {
 
 async function main() {
   if (!BRAPI_TOKEN) {
-    console.error("Faltando BRAPI_TOKEN no .env — pegue um grátis em https://brapi.dev/dashboard");
-    process.exit(1);
+    throw new Error("Faltando BRAPI_TOKEN no .env — pegue um grátis em https://brapi.dev/dashboard");
   }
 
   const tickers = await fetchAllTickers();
@@ -146,7 +145,6 @@ async function main() {
     }
   } finally {
     client.release();
-    await pool.end();
   }
 
   console.log(`\n${"=".repeat(60)}`);
@@ -166,7 +164,13 @@ async function main() {
   if (noMatch.length > 20) console.log(`  ... e mais ${noMatch.length - 20}`);
 }
 
-main().catch((err) => {
-  console.error("Erro:", err.message);
-  process.exit(1);
-});
+module.exports = { runMapping: main };
+
+if (require.main === module) {
+  main()
+    .catch((err) => {
+      console.error("Erro:", err.message);
+      process.exitCode = 1;
+    })
+    .finally(() => pool.end());
+}
