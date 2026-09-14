@@ -326,6 +326,47 @@ app.get("/api/companies/:cnpj/events", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// ATUALIZAÇÃO AUTOMÁTICA — chamado por um workflow agendado do
+// GitHub Actions (já que o Cron Job nativo do Render exige plano
+// pago). Protegido por uma chave secreta simples no header.
+// Responde na hora e roda em segundo plano, porque a ingestão
+// inteira pode levar alguns minutos — não dá pra deixar o GitHub
+// Actions esperando isso tudo dentro de um único request HTTP.
+// ─────────────────────────────────────────────────────────────
+app.post("/api/internal/ingest-all", async (req, res) => {
+  const providedKey = req.header("x-ingest-key");
+  if (!process.env.INGEST_SECRET || providedKey !== process.env.INGEST_SECRET) {
+    return res.status(401).json({ status: "não autorizado" });
+  }
+
+  res.status(202).json({ status: "iniciado", message: "Atualização rodando em segundo plano." });
+
+  // A partir daqui, roda sem o cliente esperar — erros só vão pro log do Render.
+  (async () => {
+    const year = new Date().getFullYear();
+    try {
+      console.log(`[auto-ingest] Iniciando atualização automática (${new Date().toISOString()})`);
+
+      const { ingestYear: ingestVlmo } = require("./ingest/fetchVlmo");
+      await ingestVlmo(year);
+      console.log("[auto-ingest] VLMO (negociações de insiders) concluído.");
+
+      const { ingestYear: ingestEvents } = require("./ingest/fetchEvents");
+      await ingestEvents(year);
+      console.log("[auto-ingest] Fatos relevantes concluído.");
+
+      const { runMapping } = require("./ingest/mapTickers");
+      await runMapping();
+      console.log("[auto-ingest] Mapeamento de tickers concluído.");
+
+      console.log(`[auto-ingest] Atualização automática concluída com sucesso (${new Date().toISOString()})`);
+    } catch (err) {
+      console.error("[auto-ingest] Erro durante a atualização automática:", err.message);
+    }
+  })();
+});
+
 app.get("/api/radar", async (req, res) => {
   try {
     const windowDays = Number(req.query.days) || 21;
