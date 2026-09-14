@@ -129,4 +129,8 @@ async function main() {
   }
 }
 
-main();
+module.exports = { ingestYear };
+
+if (require.main === module) {
+  main();
+}
