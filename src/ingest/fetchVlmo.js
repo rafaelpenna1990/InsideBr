@@ -227,4 +227,11 @@ async function main() {
   }
 }
 
-main();
+module.exports = { ingestYear };
+
+// Só roda sozinho quando chamado direto via terminal (npm run ingest) —
+// quando outro módulo faz require() disso (tipo o endpoint automático),
+// não queremos fechar a conexão do banco nem sair do processo.
+if (require.main === module) {
+  main();
+}
