@@ -446,6 +446,136 @@ app.post("/api/push-tokens", async (req, res) => {
   }
 });
 
+app.post("/api/push-tokens/:token/watchlist", async (req, res) => {
+  const { tickers } = req.body || {};
+  if (!Array.isArray(tickers)) {
+    return res.status(400).json({ status: "erro", message: "tickers precisa ser uma lista" });
+  }
+
+  try {
+    const tokenResult = await pool.query(
+      "SELECT id FROM push_tokens WHERE expo_push_token = $1",
+      [req.params.token]
+    );
+    if (tokenResult.rows.length === 0) {
+      return res.status(404).json({ status: "erro", message: "token não registrado" });
+    }
+    const tokenId = tokenResult.rows[0].id;
+
+    // Substitui a lista inteira (mais simples que fazer diff) — o app
+    // manda o estado completo toda vez que a lista de acompanhamento muda.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM watchlist_subscriptions WHERE push_token_id = $1", [tokenId]);
+      for (const ticker of tickers) {
+        await client.query(
+          "INSERT INTO watchlist_subscriptions (push_token_id, ticker) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          [tokenId, ticker]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    res.json({ status: "ok", watching: tickers.length });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+// Roda depois de cada ingestão automática — avisa por push só quem
+// segue uma empresa que teve negociação ou fato relevante NOVO nessa
+// rodada (created_at >= o início dessa ingestão). Sem duplicar aviso
+// em rodadas futuras, porque só olha o que entrou "agora".
+async function sendWatchlistNotifications(since) {
+  const newTx = await pool.query(
+    `
+    SELECT c.ticker, COUNT(*) AS count
+    FROM transactions t
+    JOIN companies c ON c.id = t.company_id
+    WHERE t.created_at >= $1 AND t.operation_type IN ('buy','sell')
+    GROUP BY c.ticker
+    `,
+    [since]
+  );
+  const newEvents = await pool.query(
+    `
+    SELECT c.ticker, COUNT(*) AS count
+    FROM corporate_events e
+    JOIN companies c ON c.id = e.company_id
+    WHERE e.created_at >= $1
+    GROUP BY c.ticker
+    `,
+    [since]
+  );
+
+  const changedTickers = new Map(); // ticker -> { tx, events }
+  for (const r of newTx.rows) {
+    changedTickers.set(r.ticker, { tx: Number(r.count), events: 0 });
+  }
+  for (const r of newEvents.rows) {
+    const entry = changedTickers.get(r.ticker) || { tx: 0, events: 0 };
+    entry.events = Number(r.count);
+    changedTickers.set(r.ticker, entry);
+  }
+
+  if (changedTickers.size === 0) {
+    console.log("[auto-ingest] Nenhuma mudança nova pra notificar.");
+    return;
+  }
+
+  const tickers = [...changedTickers.keys()];
+  const subsResult = await pool.query(
+    `
+    SELECT ws.ticker, pt.expo_push_token
+    FROM watchlist_subscriptions ws
+    JOIN push_tokens pt ON pt.id = ws.push_token_id
+    WHERE ws.ticker = ANY($1::text[])
+    `,
+    [tickers]
+  );
+
+  if (subsResult.rows.length === 0) {
+    console.log("[auto-ingest] Ninguém segue as empresas que mudaram — nada a notificar.");
+    return;
+  }
+
+  const messages = subsResult.rows.map((r) => {
+    const change = changedTickers.get(r.ticker);
+    const parts = [];
+    if (change.tx > 0) parts.push(`${change.tx} negociação(ões) de insider`);
+    if (change.events > 0) parts.push(`${change.events} fato(s) relevante(s)`);
+    return {
+      to: r.expo_push_token,
+      sound: "default",
+      title: `Nova movimentação em ${r.ticker}`,
+      body: `${parts.join(" e ")} desde a última atualização. Isso não é recomendação de investimento.`,
+      data: { ticker: r.ticker },
+    };
+  });
+
+  console.log(`[auto-ingest] Enviando ${messages.length} notificação(ões) push...`);
+  try {
+    const response = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(messages),
+    });
+    if (!response.ok) {
+      console.error(`[auto-ingest] Falha ao enviar notificações — status ${response.status}`);
+    } else {
+      console.log("[auto-ingest] Notificações enviadas.");
+    }
+  } catch (err) {
+    console.error("[auto-ingest] Erro enviando notificações:", err.message);
+  }
+}
+
 app.get("/api/feed", async (req, res) => {
   try {
     const days = Number(req.query.days) || 60; // janela de exibição (diferente da janela do score, que é fixa em 21d)
@@ -675,8 +805,9 @@ app.post("/api/internal/ingest-all", async (req, res) => {
   // A partir daqui, roda sem o cliente esperar — erros só vão pro log do Render.
   (async () => {
     const year = new Date().getFullYear();
+    const ingestStartedAt = new Date();
     try {
-      console.log(`[auto-ingest] Iniciando atualização automática (${new Date().toISOString()})`);
+      console.log(`[auto-ingest] Iniciando atualização automática (${ingestStartedAt.toISOString()})`);
 
       const { ingestYear: ingestVlmo } = require("./ingest/fetchVlmo");
       await ingestVlmo(year);
@@ -689,6 +820,8 @@ app.post("/api/internal/ingest-all", async (req, res) => {
       const { runMapping } = require("./ingest/mapTickers");
       await runMapping();
       console.log("[auto-ingest] Mapeamento de tickers concluído.");
+
+      await sendWatchlistNotifications(ingestStartedAt);
 
       console.log(`[auto-ingest] Atualização automática concluída com sucesso (${new Date().toISOString()})`);
     } catch (err) {
