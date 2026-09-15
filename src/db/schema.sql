@@ -69,6 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_events_filed_date ON corporate_events(filed_date)
 CREATE TABLE IF NOT EXISTS push_tokens (
   id SERIAL PRIMARY KEY,
   expo_push_token TEXT UNIQUE NOT NULL,
+  alert_preferences JSONB DEFAULT '{"newEvent": true, "multiInsider": true, "minScore": 30, "minValue": null}'::jsonb,
   created_at TIMESTAMP DEFAULT NOW(),
   last_seen_at TIMESTAMP DEFAULT NOW()
 );
