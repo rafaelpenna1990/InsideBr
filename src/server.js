@@ -446,6 +446,27 @@ app.post("/api/push-tokens", async (req, res) => {
   }
 });
 
+app.post("/api/push-tokens/:token/preferences", async (req, res) => {
+  const { newEvent, multiInsider, minScore, minValue } = req.body || {};
+  try {
+    const result = await pool.query(
+      `
+      UPDATE push_tokens
+      SET alert_preferences = $1::jsonb
+      WHERE expo_push_token = $2
+      RETURNING id
+      `,
+      [JSON.stringify({ newEvent, multiInsider, minScore, minValue }), req.params.token]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ status: "erro", message: "token não registrado" });
+    }
+    res.json({ status: "ok" });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.post("/api/push-tokens/:token/watchlist", async (req, res) => {
   const { tickers } = req.body || {};
   if (!Array.isArray(tickers)) {
@@ -490,37 +511,51 @@ app.post("/api/push-tokens/:token/watchlist", async (req, res) => {
 
 // Roda depois de cada ingestão automática — avisa por push só quem
 // segue uma empresa que teve negociação ou fato relevante NOVO nessa
-// rodada (created_at >= o início dessa ingestão). Sem duplicar aviso
-// em rodadas futuras, porque só olha o que entrou "agora".
+// rodada (created_at >= o início dessa ingestão), E cujas preferências
+// de alerta batem com o que mudou (tipo de evento, score mínimo, etc).
 async function sendWatchlistNotifications(since) {
   const newTx = await pool.query(
     `
-    SELECT c.ticker, COUNT(*) AS count
+    SELECT c.ticker, c.id AS company_id, t.role_category, COUNT(*) AS count
     FROM transactions t
     JOIN companies c ON c.id = t.company_id
     WHERE t.created_at >= $1 AND t.operation_type IN ('buy','sell')
-    GROUP BY c.ticker
+    GROUP BY c.ticker, c.id, t.role_category
     `,
     [since]
   );
   const newEvents = await pool.query(
     `
-    SELECT c.ticker, COUNT(*) AS count
+    SELECT c.ticker, c.id AS company_id, COUNT(*) AS count
     FROM corporate_events e
     JOIN companies c ON c.id = e.company_id
     WHERE e.created_at >= $1
-    GROUP BY c.ticker
+    GROUP BY c.ticker, c.id
     `,
     [since]
   );
 
-  const changedTickers = new Map(); // ticker -> { tx, events }
+  // ticker -> { companyId, txCount, distinctRolesChanged, eventCount }
+  const changedTickers = new Map();
   for (const r of newTx.rows) {
-    changedTickers.set(r.ticker, { tx: Number(r.count), events: 0 });
+    const entry = changedTickers.get(r.ticker) || {
+      companyId: r.company_id,
+      txCount: 0,
+      rolesChanged: new Set(),
+      eventCount: 0,
+    };
+    entry.txCount += Number(r.count);
+    if (r.role_category) entry.rolesChanged.add(r.role_category);
+    changedTickers.set(r.ticker, entry);
   }
   for (const r of newEvents.rows) {
-    const entry = changedTickers.get(r.ticker) || { tx: 0, events: 0 };
-    entry.events = Number(r.count);
+    const entry = changedTickers.get(r.ticker) || {
+      companyId: r.company_id,
+      txCount: 0,
+      rolesChanged: new Set(),
+      eventCount: 0,
+    };
+    entry.eventCount += Number(r.count);
     changedTickers.set(r.ticker, entry);
   }
 
@@ -530,9 +565,12 @@ async function sendWatchlistNotifications(since) {
   }
 
   const tickers = [...changedTickers.keys()];
+  const companyIds = [...changedTickers.values()].map((v) => v.companyId);
+  const scores = await getCompanyBuyScores(companyIds);
+
   const subsResult = await pool.query(
     `
-    SELECT ws.ticker, pt.expo_push_token
+    SELECT ws.ticker, pt.expo_push_token, pt.alert_preferences
     FROM watchlist_subscriptions ws
     JOIN push_tokens pt ON pt.id = ws.push_token_id
     WHERE ws.ticker = ANY($1::text[])
@@ -545,19 +583,49 @@ async function sendWatchlistNotifications(since) {
     return;
   }
 
-  const messages = subsResult.rows.map((r) => {
+  const messages = [];
+  for (const r of subsResult.rows) {
     const change = changedTickers.get(r.ticker);
+    const score = scores.get(change.companyId);
+    const prefs = r.alert_preferences || {};
+
+    const hasNewEvent = change.eventCount > 0;
+    const hasMultiInsider = change.rolesChanged.size >= 2;
+    const scoreValue = score ? score.score : 0;
+    const recentValue = score ? score.recentValue : 0;
+
+    // Preferências, com default sensato caso a coluna venha vazia
+    const wantsNewEvent = prefs.newEvent !== false;
+    const wantsMultiInsider = prefs.multiInsider !== false;
+    const minScore = prefs.minScore ?? 30;
+    const minValue = prefs.minValue ?? null;
+
+    // Passa se QUALQUER critério ativado bater — não precisa bater todos
+    const matchesEvent = hasNewEvent && wantsNewEvent;
+    const matchesMultiInsider = hasMultiInsider && wantsMultiInsider;
+    const matchesScore = scoreValue >= minScore;
+    const matchesValue = minValue == null || recentValue >= minValue;
+
+    const shouldNotify = (matchesEvent || matchesMultiInsider || matchesScore) && matchesValue;
+    if (!shouldNotify) continue;
+
     const parts = [];
-    if (change.tx > 0) parts.push(`${change.tx} negociação(ões) de insider`);
-    if (change.events > 0) parts.push(`${change.events} fato(s) relevante(s)`);
-    return {
+    if (change.txCount > 0) parts.push(`${change.txCount} negociação(ões) de insider`);
+    if (change.eventCount > 0) parts.push(`${change.eventCount} fato(s) relevante(s)`);
+
+    messages.push({
       to: r.expo_push_token,
       sound: "default",
       title: `Nova movimentação em ${r.ticker}`,
-      body: `${parts.join(" e ")} desde a última atualização. Isso não é recomendação de investimento.`,
+      body: `${parts.join(" e ")} desde a última atualização (score ${scoreValue}/100). Isso não é recomendação de investimento.`,
       data: { ticker: r.ticker },
-    };
-  });
+    });
+  }
+
+  if (messages.length === 0) {
+    console.log("[auto-ingest] Ninguém tinha preferência batendo com as mudanças — nada enviado.");
+    return;
+  }
 
   console.log(`[auto-ingest] Enviando ${messages.length} notificação(ões) push...`);
   try {
