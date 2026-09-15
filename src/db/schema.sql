@@ -66,6 +66,13 @@ CREATE TABLE IF NOT EXISTS corporate_events (
 CREATE INDEX IF NOT EXISTS idx_events_company ON corporate_events(company_id);
 CREATE INDEX IF NOT EXISTS idx_events_filed_date ON corporate_events(filed_date);
 
+CREATE TABLE IF NOT EXISTS push_tokens (
+  id SERIAL PRIMARY KEY,
+  expo_push_token TEXT UNIQUE NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW(),
+  last_seen_at TIMESTAMP DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
