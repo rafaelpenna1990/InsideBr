@@ -672,7 +672,9 @@ async function sendWatchlistNotifications(since) {
 
 app.get("/api/feed", async (req, res) => {
   try {
-    const days = Number(req.query.days) || 60; // janela de exibição (diferente da janela do score, que é fixa em 21d)
+    // Sem "days" na URL, mostra tudo (sem filtro de data) — o período
+    // vira um filtro OPCIONAL que a pessoa liga se quiser, não padrão.
+    const days = req.query.days ? Number(req.query.days) : null;
     const type = req.query.type || "all"; // all | buy | sell | evento
     const sort = req.query.sort || "recent"; // recent | score | value | insiders | impact
     const limit = Math.min(Number(req.query.limit) || 30, 100);
@@ -684,37 +686,55 @@ app.get("/api/feed", async (req, res) => {
 
     let txRows = [];
     if (includeTx) {
+      const txParams = [];
+      const txConditions = ["c.ticker IS NOT NULL"];
+
+      if (days) {
+        txParams.push(days);
+        txConditions.push(`t.transaction_date >= (CURRENT_DATE - $${txParams.length}::int)`);
+      }
+      if (txOperationFilter) {
+        txParams.push(txOperationFilter);
+        txConditions.push(`t.operation_type = $${txParams.length}`);
+      } else {
+        txConditions.push("t.operation_type IN ('buy','sell')");
+      }
+
       const txResult = await pool.query(
         `
         SELECT t.id, t.company_id, t.role_category, t.operation_type, t.total_value,
                t.transaction_date, t.filed_date, c.ticker, c.name AS company_name, c.cnpj
         FROM transactions t
         JOIN companies c ON c.id = t.company_id
-        WHERE c.ticker IS NOT NULL
-          AND t.transaction_date >= (CURRENT_DATE - $1::int)
-          ${txOperationFilter ? "AND t.operation_type = $2" : "AND t.operation_type IN ('buy','sell')"}
+        WHERE ${txConditions.join(" AND ")}
         ORDER BY t.transaction_date DESC NULLS LAST
         LIMIT 500
         `,
-        txOperationFilter ? [days, txOperationFilter] : [days]
+        txParams
       );
       txRows = txResult.rows;
     }
 
     let eventRows = [];
     if (includeEvents) {
+      const eventParams = [];
+      const eventConditions = ["c.ticker IS NOT NULL"];
+      if (days) {
+        eventParams.push(days);
+        eventConditions.push(`e.filed_date >= (CURRENT_DATE - $${eventParams.length}::int)`);
+      }
+
       const eventResult = await pool.query(
         `
         SELECT e.id, e.company_id, e.subject, e.filed_date, e.document_url,
                c.ticker, c.name AS company_name, c.cnpj
         FROM corporate_events e
         JOIN companies c ON c.id = e.company_id
-        WHERE c.ticker IS NOT NULL
-          AND e.filed_date >= (CURRENT_DATE - $1::int)
+        WHERE ${eventConditions.join(" AND ")}
         ORDER BY e.filed_date DESC NULLS LAST
         LIMIT 500
         `,
-        [days]
+        eventParams
       );
       eventRows = eventResult.rows;
     }
