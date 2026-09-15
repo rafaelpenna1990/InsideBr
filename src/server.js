@@ -119,6 +119,62 @@ app.get("/api/market/history/:ticker", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// NOTÍCIAS — em vez de resumir o PDF do fato relevante com IA (que
+// exigiria uma chave paga da Anthropic), usamos o feed público do
+// Google Notícias: manchetes reais, já escritas por jornalistas,
+// de graça, sem chave de API nenhuma.
+// ─────────────────────────────────────────────────────────────
+const { XMLParser } = require("fast-xml-parser");
+const newsCache = new Map();
+const NEWS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora
+
+async function fetchCompanyNews(companyName) {
+  const cached = newsCache.get(companyName);
+  if (cached && Date.now() - cached.fetchedAt < NEWS_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const query = encodeURIComponent(`"${companyName}"`);
+  const url = `https://news.google.com/rss/search?q=${query}&hl=pt-BR&gl=BR&ceid=BR:pt-419`;
+
+  const response = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; InsideBR/1.0)" },
+  });
+  if (!response.ok) throw new Error(`Falha no Google News (${response.status})`);
+
+  const xml = await response.text();
+  const parser = new XMLParser();
+  const parsed = parser.parse(xml);
+
+  const rawItems = parsed?.rss?.channel?.item || [];
+  const items = (Array.isArray(rawItems) ? rawItems : [rawItems]).slice(0, 8).map((item) => ({
+    title: typeof item.title === "string" ? item.title : "",
+    link: typeof item.link === "string" ? item.link : "",
+    source: item.source?.["#text"] || item.source || null,
+    pubDate: item.pubDate || null,
+  }));
+
+  newsCache.set(companyName, { data: items, fetchedAt: Date.now() });
+  return items;
+}
+
+app.get("/api/companies/:cnpj/news", async (req, res) => {
+  try {
+    const companyResult = await pool.query(
+      "SELECT name FROM companies WHERE cnpj = $1",
+      [req.params.cnpj]
+    );
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    const news = await fetchCompanyNews(companyResult.rows[0].name);
+    res.json(news);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/companies/by-ticker/:ticker", async (req, res) => {
   try {
     const result = await pool.query(
