@@ -446,6 +446,20 @@ app.post("/api/push-tokens", async (req, res) => {
   }
 });
 
+// TEMPORÁRIO — só pra conferir se uma migração de verdade aplicou no
+// banco. Pode remover depois que confirmar.
+app.get("/api/debug/columns/:table", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1",
+      [req.params.table]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.post("/api/push-tokens/:token/preferences", async (req, res) => {
   const { newEvent, multiInsider, minScore, minValue } = req.body || {};
   try {
