@@ -73,6 +73,14 @@ CREATE TABLE IF NOT EXISTS push_tokens (
   last_seen_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS watchlist_subscriptions (
+  id SERIAL PRIMARY KEY,
+  push_token_id INTEGER REFERENCES push_tokens(id) ON DELETE CASCADE,
+  ticker VARCHAR(10) NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(push_token_id, ticker)
+);
+
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
