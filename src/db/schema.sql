@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS push_tokens (
   last_seen_at TIMESTAMP DEFAULT NOW()
 );
 
+ALTER TABLE push_tokens ADD COLUMN IF NOT EXISTS alert_preferences JSONB
+  DEFAULT '{"newEvent": true, "multiInsider": true, "minScore": 30, "minValue": null}'::jsonb;
+
 CREATE TABLE IF NOT EXISTS watchlist_subscriptions (
   id SERIAL PRIMARY KEY,
   push_token_id INTEGER REFERENCES push_tokens(id) ON DELETE CASCADE,
