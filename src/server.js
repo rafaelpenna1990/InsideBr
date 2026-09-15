@@ -448,6 +448,18 @@ app.post("/api/push-tokens", async (req, res) => {
 
 // TEMPORÁRIO — só pra conferir se uma migração de verdade aplicou no
 // banco. Pode remover depois que confirmar.
+// TEMPORÁRIO — só pra investigar os campos originais da CVM.
+app.get("/api/debug/sample-transaction", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT raw_data FROM transactions WHERE raw_data IS NOT NULL LIMIT 1"
+    );
+    res.json(result.rows[0]?.raw_data || {});
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/debug/columns/:table", async (req, res) => {
   try {
     const result = await pool.query(
@@ -679,9 +691,9 @@ app.get("/api/feed", async (req, res) => {
         FROM transactions t
         JOIN companies c ON c.id = t.company_id
         WHERE c.ticker IS NOT NULL
-          AND t.filed_date >= (CURRENT_DATE - $1::int)
+          AND t.transaction_date >= (CURRENT_DATE - $1::int)
           ${txOperationFilter ? "AND t.operation_type = $2" : "AND t.operation_type IN ('buy','sell')"}
-        ORDER BY t.filed_date DESC NULLS LAST
+        ORDER BY t.transaction_date DESC NULLS LAST
         LIMIT 500
         `,
         txOperationFilter ? [days, txOperationFilter] : [days]
