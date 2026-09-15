@@ -672,9 +672,11 @@ async function sendWatchlistNotifications(since) {
 
 app.get("/api/feed", async (req, res) => {
   try {
-    // Sem "days" na URL, mostra tudo (sem filtro de data) — o período
-    // vira um filtro OPCIONAL que a pessoa liga se quiser, não padrão.
-    const days = req.query.days ? Number(req.query.days) : null;
+    // Filtro por data específica: "from" e/ou "to" (formato YYYY-MM-DD).
+    // Sem nenhum dos dois, mostra tudo. Só "from" = a partir daquele dia.
+    // Só "to" = até aquele dia. Os dois iguais = um dia único.
+    const from = req.query.from || null;
+    const to = req.query.to || null;
     const type = req.query.type || "all"; // all | buy | sell | evento
     const sort = req.query.sort || "recent"; // recent | score | value | insiders | impact
     const limit = Math.min(Number(req.query.limit) || 30, 100);
@@ -689,9 +691,13 @@ app.get("/api/feed", async (req, res) => {
       const txParams = [];
       const txConditions = ["c.ticker IS NOT NULL"];
 
-      if (days) {
-        txParams.push(days);
-        txConditions.push(`t.transaction_date >= (CURRENT_DATE - $${txParams.length}::int)`);
+      if (from) {
+        txParams.push(from);
+        txConditions.push(`t.transaction_date >= $${txParams.length}::date`);
+      }
+      if (to) {
+        txParams.push(to);
+        txConditions.push(`t.transaction_date <= $${txParams.length}::date`);
       }
       if (txOperationFilter) {
         txParams.push(txOperationFilter);
@@ -719,9 +725,13 @@ app.get("/api/feed", async (req, res) => {
     if (includeEvents) {
       const eventParams = [];
       const eventConditions = ["c.ticker IS NOT NULL"];
-      if (days) {
-        eventParams.push(days);
-        eventConditions.push(`e.filed_date >= (CURRENT_DATE - $${eventParams.length}::int)`);
+      if (from) {
+        eventParams.push(from);
+        eventConditions.push(`e.filed_date >= $${eventParams.length}::date`);
+      }
+      if (to) {
+        eventParams.push(to);
+        eventConditions.push(`e.filed_date <= $${eventParams.length}::date`);
       }
 
       const eventResult = await pool.query(
