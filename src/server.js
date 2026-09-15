@@ -219,20 +219,141 @@ app.get("/api/companies/search", async (req, res) => {
 // a movimentação. O score mede ATIVIDADE, não probabilidade de
 // alta — importante deixar isso claro em qualquer lugar que exibe.
 // ─────────────────────────────────────────────────────────────
-function computeScore({ recentValue, recentRoles, multiplier }) {
-  const valueScore = Math.min(recentValue / 5_000_000, 1) * 25;
-  const rolesScore = Math.min(recentRoles / 4, 1) * 30;
-  const multiplierScore = Math.min(multiplier / 5, 1) * 30;
-  // Base de 15 pontos só por ter entrado no radar (atividade recente de verdade)
-  const base = 15;
-  return Math.round(Math.min(valueScore + rolesScore + multiplierScore + base, 100));
-}
+// ─────────────────────────────────────────────────────────────
+// INSIDER RADAR / SCORE — mede o quão relevante e fora do padrão
+// está a atividade de compra ou venda, NUNCA previsão de preço.
+//
+// 5 pilares, adaptados ao dado que realmente temos disponível:
+//  1. Valor da movimentação (30 pts) — tamanho absoluto em R$.
+//     O ideal seria comparar com o volume negociado no mercado
+//     daquela ação, mas não temos esse dado hoje — fica documentado
+//     como limitação, não fingimos ter o que não temos.
+//  2. Diversidade de cargos (25 pts) — proxy pra "insiders distintos".
+//     A CVM não dá nome individual no dado aberto que usamos, só
+//     categoria (Diretor, Conselho, Controlador...) — usamos isso
+//     honestamente, sem fingir que é contagem de pessoas.
+//  3. Concentração temporal (15 pts) — várias operações numa janela
+//     curta pesa mais que a mesma quantidade espalhada.
+//  4. Comparação histórica (20 pts) — vs. a MEDIANA mensal histórica
+//     da própria empresa (mediana é mais robusta que média a outliers).
+//  5. Qualidade dos dados (10 pts) — penaliza quando a fonte não
+//     informou o valor da operação (acontece às vezes na CVM).
+// ─────────────────────────────────────────────────────────────
+function computeExplainableScore({ recentTx, historicalMonthly, windowDays }) {
+  const recentValue = recentTx.reduce((sum, t) => sum + t.value, 0);
+  const distinctRoles = new Set(recentTx.map((t) => t.roleCategory).filter(Boolean)).size;
+  const txCount = recentTx.length;
+  const validValueCount = recentTx.filter((t) => t.value > 0).length;
 
-function scoreLabel(score) {
-  if (score >= 80) return "Atividade muito incomum";
-  if (score >= 60) return "Atividade acima do normal";
-  if (score >= 40) return "Atividade moderada";
-  return "Atividade dentro do padrão";
+  const hasHistory = historicalMonthly.length >= 3; // menos de 3 meses = histórico insuficiente
+  const sortedHist = [...historicalMonthly].filter((v) => v > 0).sort((a, b) => a - b);
+  const median = sortedHist.length ? sortedHist[Math.floor(sortedHist.length / 2)] : 0;
+
+  // Pilar 1 — Valor da movimentação (30 pts)
+  const p1 = Math.min(recentValue / 5_000_000, 1) * 30;
+
+  // Pilar 2 — Diversidade de cargos (25 pts)
+  const p2 = Math.min(distinctRoles / 4, 1) * 25;
+
+  // Pilar 3 — Concentração temporal (15 pts)
+  let p3 = 0;
+  let concentrationDetail = "Menos de 2 operações no período — não dá pra avaliar concentração.";
+  if (txCount >= 2) {
+    const dates = recentTx.map((t) => new Date(t.date).getTime());
+    const spanDays = (Math.max(...dates) - Math.min(...dates)) / 86400000;
+    const ratio = 1 - Math.min(spanDays / windowDays, 1);
+    p3 = ratio * 15;
+    concentrationDetail = `${txCount} operações em ${spanDays.toFixed(0)} dia(s), dentro da janela de ${windowDays} dias analisada.`;
+  }
+
+  // Pilar 4 — Comparação histórica (20 pts)
+  let p4 = 0;
+  let historyDetail;
+  if (!hasHistory) {
+    historyDetail = "Histórico insuficiente (menos de 3 meses de dados) pra essa empresa — pilar não pontuado.";
+  } else if (median <= 0) {
+    p4 = recentValue > 0 ? 20 : 0;
+    historyDetail = "Sem mediana histórica válida — comparação limitada.";
+  } else {
+    const multiplier = recentValue / median;
+    p4 = Math.min(multiplier / 5, 1) * 20;
+    historyDetail = `${multiplier.toFixed(1)}× a mediana histórica mensal dessa empresa.`;
+  }
+
+  // Pilar 5 — Qualidade dos dados (10 pts)
+  let p5 = 10;
+  let qualityDetail = "Sem operações recentes pra avaliar.";
+  if (txCount > 0) {
+    const completeness = validValueCount / txCount;
+    p5 = completeness * 10;
+    qualityDetail =
+      validValueCount === txCount
+        ? "Todas as operações do período têm valor informado pela fonte."
+        : `${txCount - validValueCount} de ${txCount} operação(ões) sem valor informado pela CVM.`;
+  }
+
+  const score = Math.round(p1 + p2 + p3 + p4 + p5);
+
+  let relevance = "Baixa relevância";
+  if (score >= 75) relevance = "Relevância muito alta";
+  else if (score >= 55) relevance = "Alta relevância";
+  else if (score >= 30) relevance = "Relevância moderada";
+
+  const breakdown = [
+    {
+      key: "valor",
+      label: "Valor da movimentação",
+      points: Math.round(p1),
+      max: 30,
+      detail: `R$ ${recentValue.toLocaleString("pt-BR")} no período.`,
+    },
+    {
+      key: "cargos",
+      label: "Diversidade de cargos",
+      points: Math.round(p2),
+      max: 25,
+      detail: `${distinctRoles} categoria(s) de cargo distinta(s) (proxy — CVM não informa nome individual).`,
+    },
+    {
+      key: "concentracao",
+      label: "Concentração temporal",
+      points: Math.round(p3),
+      max: 15,
+      detail: concentrationDetail,
+    },
+    {
+      key: "historico",
+      label: "Comparação histórica",
+      points: Math.round(p4),
+      max: 20,
+      detail: historyDetail,
+    },
+    {
+      key: "qualidade",
+      label: "Qualidade dos dados",
+      points: Math.round(p5),
+      max: 10,
+      detail: qualityDetail,
+    },
+  ];
+
+  let explanation;
+  if (txCount === 0) {
+    explanation =
+      "Sem operações registradas nesse período. O score reflete a ausência de atividade recente, não um evento negativo.";
+  } else {
+    const historyPart = median > 0 ? `, ${(recentValue / median).toFixed(1)}× a mediana histórica da empresa` : "";
+    explanation = `Score ${score}/100 (${relevance.toLowerCase()}) porque ${distinctRoles} categoria(s) de cargo realizaram operações somando R$ ${recentValue.toLocaleString("pt-BR")} em ${windowDays} dias${historyPart}. Isso não é recomendação de investimento.`;
+  }
+
+  return {
+    score,
+    relevance,
+    breakdown,
+    explanation,
+    hasRecentActivity: txCount > 0,
+    historySufficient: hasHistory,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -371,42 +492,46 @@ app.get("/api/radar", async (req, res) => {
   try {
     const windowDays = Number(req.query.days) || 21;
 
-    const recentResult = await pool.query(
+    // Transações individuais no período (precisamos das linhas, não só
+    // do agregado, pra calcular concentração temporal e qualidade dos dados)
+    const recentTxResult = await pool.query(
       `
-      SELECT
-        t.company_id,
-        SUM(t.total_value) AS recent_value,
-        COUNT(DISTINCT t.role_category) AS recent_roles,
-        MAX(t.transaction_date) AS last_date,
-        COUNT(*) AS recent_count
-      FROM transactions t
-      WHERE t.operation_type = 'buy'
-        AND t.transaction_date >= (CURRENT_DATE - $1::int)
-      GROUP BY t.company_id
+      SELECT company_id, role_category, total_value, transaction_date
+      FROM transactions
+      WHERE operation_type = 'buy'
+        AND transaction_date >= (CURRENT_DATE - $1::int)
       `,
       [windowDays]
     );
 
-    if (recentResult.rows.length === 0) return res.json([]);
+    if (recentTxResult.rows.length === 0) return res.json({ items: [], totalBoughtPeriod: 0 });
 
-    const companyIds = recentResult.rows.map((r) => r.company_id);
+    const txByCompany = new Map();
+    for (const r of recentTxResult.rows) {
+      if (!txByCompany.has(r.company_id)) txByCompany.set(r.company_id, []);
+      txByCompany.get(r.company_id).push({
+        roleCategory: r.role_category,
+        value: Number(r.total_value) || 0,
+        date: r.transaction_date,
+      });
+    }
+
+    const companyIds = [...txByCompany.keys()];
 
     const historicalResult = await pool.query(
       `
-      SELECT company_id, AVG(month_value) AS avg_monthly
-      FROM (
-        SELECT company_id, DATE_TRUNC('month', transaction_date) AS month, SUM(total_value) AS month_value
-        FROM transactions
-        WHERE operation_type = 'buy' AND company_id = ANY($1::int[])
-        GROUP BY company_id, DATE_TRUNC('month', transaction_date)
-      ) monthly
-      GROUP BY company_id
+      SELECT company_id, DATE_TRUNC('month', transaction_date) AS month, SUM(total_value) AS month_value
+      FROM transactions
+      WHERE operation_type = 'buy' AND company_id = ANY($1::int[])
+      GROUP BY company_id, DATE_TRUNC('month', transaction_date)
       `,
       [companyIds]
     );
-    const avgByCompany = new Map(
-      historicalResult.rows.map((r) => [r.company_id, Number(r.avg_monthly) || 0])
-    );
+    const historicalByCompany = new Map();
+    for (const r of historicalResult.rows) {
+      if (!historicalByCompany.has(r.company_id)) historicalByCompany.set(r.company_id, []);
+      historicalByCompany.get(r.company_id).push(Number(r.month_value) || 0);
+    }
 
     const companiesResult = await pool.query(
       `SELECT id, name, ticker, cnpj FROM companies WHERE id = ANY($1::int[])`,
@@ -414,46 +539,43 @@ app.get("/api/radar", async (req, res) => {
     );
     const companyById = new Map(companiesResult.rows.map((c) => [c.id, c]));
 
-    const RADAR_MIN_SCORE = 40; // abaixo disso é "dentro do padrão" — não é achado de radar
+    const RADAR_MIN_SCORE = 30; // abaixo de "relevância moderada" não entra no radar
 
-    // Total comprado no período conta TUDO (mesmo o que não entra no radar
-    // por ter score baixo) — é uma métrica diferente, não deve cair pra R$0
-    // só porque nada foi "incomum" o suficiente nesse momento.
-    const totalBoughtPeriod = recentResult.rows.reduce(
-      (sum, r) => sum + (Number(r.recent_value) || 0),
+    const totalBoughtPeriod = recentTxResult.rows.reduce(
+      (sum, r) => sum + (Number(r.total_value) || 0),
       0
     );
 
-    const radar = recentResult.rows
-      .map((r) => {
-        const company = companyById.get(r.company_id);
+    const radar = companyIds
+      .map((companyId) => {
+        const company = companyById.get(companyId);
         if (!company || !company.ticker) return null; // sem ticker, não dá pra linkar na UI
 
-        const recentValue = Number(r.recent_value) || 0;
-        if (recentValue <= 0) return null; // sem preço informado na fonte — não é sinal de verdade
+        const recentTx = txByCompany.get(companyId);
+        const historicalMonthly = historicalByCompany.get(companyId) || [];
 
-        const recentRoles = Number(r.recent_roles) || 0;
-        const avgMonthly = avgByCompany.get(r.company_id) || 0;
-        // Se não tem histórico prévio, considera "infinitamente acima da média"
-        // mas usa um teto (10x) pra não distorcer o score
-        const multiplier = avgMonthly > 0 ? recentValue / avgMonthly : 10;
+        const result = computeExplainableScore({ recentTx, historicalMonthly, windowDays });
+        if (result.score < RADAR_MIN_SCORE) return null;
 
-        const score = computeScore({ recentValue, recentRoles, multiplier });
-        if (score < RADAR_MIN_SCORE) return null; // atividade normal, não entra no radar
+        const recentValue = recentTx.reduce((sum, t) => sum + t.value, 0);
+        const distinctRoles = new Set(recentTx.map((t) => t.roleCategory)).size;
+        const lastDate = recentTx.reduce(
+          (max, t) => (new Date(t.date) > new Date(max) ? t.date : max),
+          recentTx[0].date
+        );
 
         return {
           ticker: company.ticker,
           companyName: company.name,
           cnpj: company.cnpj,
           recentValue,
-          recentRoles,
-          recentCount: Number(r.recent_count),
-          avgMonthly,
-          multiplier: Math.round(multiplier * 10) / 10,
-          lastDate: r.last_date,
-          score,
-          label: scoreLabel(score),
-          type: recentRoles >= 3 ? "cluster" : "unusual",
+          recentRoles: distinctRoles,
+          recentCount: recentTx.length,
+          lastDate,
+          score: result.score,
+          relevance: result.relevance,
+          explanation: result.explanation,
+          type: distinctRoles >= 3 ? "cluster" : "unusual",
         };
       })
       .filter(Boolean)
@@ -478,48 +600,48 @@ app.get("/api/companies/:cnpj/score", async (req, res) => {
     }
     const company = companyResult.rows[0];
 
-    const recentResult = await pool.query(
-      `
-      SELECT
-        COALESCE(SUM(total_value), 0) AS recent_value,
-        COUNT(DISTINCT role_category) AS recent_roles
-      FROM transactions
-      WHERE company_id = $1
-        AND operation_type = 'buy'
-        AND transaction_date >= (CURRENT_DATE - $2::int)
-      `,
-      [company.id, windowDays]
-    );
-    const { recent_value, recent_roles } = recentResult.rows[0];
-
-    const historicalResult = await pool.query(
-      `
-      SELECT AVG(month_value) AS avg_monthly
-      FROM (
-        SELECT DATE_TRUNC('month', transaction_date) AS month, SUM(total_value) AS month_value
+    async function computeForOperation(operationType) {
+      const recentResult = await pool.query(
+        `
+        SELECT role_category, total_value, transaction_date
         FROM transactions
-        WHERE operation_type = 'buy' AND company_id = $1
-        GROUP BY DATE_TRUNC('month', transaction_date)
-      ) monthly
-      `,
-      [company.id]
-    );
-    const avgMonthly = Number(historicalResult.rows[0].avg_monthly) || 0;
+        WHERE company_id = $1
+          AND operation_type = $2
+          AND transaction_date >= (CURRENT_DATE - $3::int)
+        `,
+        [company.id, operationType, windowDays]
+      );
+      const recentTx = recentResult.rows.map((r) => ({
+        roleCategory: r.role_category,
+        value: Number(r.total_value) || 0,
+        date: r.transaction_date,
+      }));
 
-    const recentValue = Number(recent_value);
-    const recentRoles = Number(recent_roles);
-    const multiplier = avgMonthly > 0 ? recentValue / avgMonthly : recentValue > 0 ? 10 : 0;
-    const score = computeScore({ recentValue, recentRoles, multiplier });
+      const historicalResult = await pool.query(
+        `
+        SELECT SUM(total_value) AS month_value
+        FROM transactions
+        WHERE operation_type = $1 AND company_id = $2
+        GROUP BY DATE_TRUNC('month', transaction_date)
+        `,
+        [operationType, company.id]
+      );
+      const historicalMonthly = historicalResult.rows.map((r) => Number(r.month_value) || 0);
+
+      return computeExplainableScore({ recentTx, historicalMonthly, windowDays });
+    }
+
+    const [buy, sell] = await Promise.all([
+      computeForOperation("buy"),
+      computeForOperation("sell"),
+    ]);
 
     res.json({
       ticker: company.ticker,
       companyName: company.name,
-      score,
-      label: scoreLabel(score),
-      recentValue,
-      recentRoles,
-      avgMonthly,
-      multiplier: Math.round(multiplier * 10) / 10,
+      windowDays,
+      buy,
+      sell,
     });
   } catch (err) {
     res.status(500).json({ status: "erro", message: err.message });
