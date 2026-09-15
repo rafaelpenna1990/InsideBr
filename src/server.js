@@ -353,6 +353,9 @@ function computeExplainableScore({ recentTx, historicalMonthly, windowDays }) {
     explanation,
     hasRecentActivity: txCount > 0,
     historySufficient: hasHistory,
+    distinctRoles,
+    recentValue,
+    multiplier: median > 0 ? recentValue / median : null,
   };
 }
 
@@ -360,6 +363,212 @@ function computeExplainableScore({ recentTx, historicalMonthly, windowDays }) {
 // RANKING — empresas e categorias de cargo com mais atividade de
 // insider (compra), no período pedido (padrão: histórico completo).
 // ─────────────────────────────────────────────────────────────
+// Calcula o score de COMPRA (janela fixa de 21 dias, pra bater com o
+// resto do app) pra um lote de empresas de uma vez — evita N+1 query
+// quando o feed tem dezenas de empresas diferentes na mesma página.
+async function getCompanyBuyScores(companyIds) {
+  const scores = new Map();
+  if (companyIds.length === 0) return scores;
+
+  const recentResult = await pool.query(
+    `
+    SELECT company_id, role_category, total_value, transaction_date
+    FROM transactions
+    WHERE operation_type = 'buy'
+      AND company_id = ANY($1::int[])
+      AND transaction_date >= (CURRENT_DATE - 21)
+    `,
+    [companyIds]
+  );
+  const txByCompany = new Map();
+  for (const r of recentResult.rows) {
+    if (!txByCompany.has(r.company_id)) txByCompany.set(r.company_id, []);
+    txByCompany.get(r.company_id).push({
+      roleCategory: r.role_category,
+      value: Number(r.total_value) || 0,
+      date: r.transaction_date,
+    });
+  }
+
+  const historicalResult = await pool.query(
+    `
+    SELECT company_id, DATE_TRUNC('month', transaction_date) AS month, SUM(total_value) AS month_value
+    FROM transactions
+    WHERE operation_type = 'buy' AND company_id = ANY($1::int[])
+    GROUP BY company_id, DATE_TRUNC('month', transaction_date)
+    `,
+    [companyIds]
+  );
+  const histByCompany = new Map();
+  for (const r of historicalResult.rows) {
+    if (!histByCompany.has(r.company_id)) histByCompany.set(r.company_id, []);
+    histByCompany.get(r.company_id).push(Number(r.month_value) || 0);
+  }
+
+  for (const id of companyIds) {
+    const recentTx = txByCompany.get(id) || [];
+    const historicalMonthly = histByCompany.get(id) || [];
+    const result = computeExplainableScore({ recentTx, historicalMonthly, windowDays: 21 });
+    scores.set(id, result);
+  }
+  return scores;
+}
+
+// ─────────────────────────────────────────────────────────────
+// FEED UNIFICADO — junta negociações de insiders (compra/venda) e
+// fatos relevantes numa lista só, com filtro e ordenação. É o que
+// alimenta a tela Radar (tela inicial do app).
+// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// PUSH NOTIFICATIONS — estrutura de dados pronta pra receber o
+// token do dispositivo. IMPORTANTE: isso só GUARDA o token — ainda
+// NÃO existe nenhuma rotina que decide quando disparar uma
+// notificação de verdade (precisaria rodar dentro do job semanal
+// de ingestão, avaliando as regras de alerta contra o dado novo, e
+// chamando a Push API da Expo). Documentado como pendente.
+// ─────────────────────────────────────────────────────────────
+app.post("/api/push-tokens", async (req, res) => {
+  const { token } = req.body || {};
+  if (!token) return res.status(400).json({ status: "erro", message: "token é obrigatório" });
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO push_tokens (expo_push_token)
+      VALUES ($1)
+      ON CONFLICT (expo_push_token) DO UPDATE SET last_seen_at = NOW()
+      `,
+      [token]
+    );
+    res.json({ status: "ok" });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/feed", async (req, res) => {
+  try {
+    const days = Number(req.query.days) || 60; // janela de exibição (diferente da janela do score, que é fixa em 21d)
+    const type = req.query.type || "all"; // all | buy | sell | evento
+    const sort = req.query.sort || "recent"; // recent | score | value | insiders | impact
+    const limit = Math.min(Number(req.query.limit) || 30, 100);
+    const offset = Number(req.query.offset) || 0;
+
+    const includeTx = type !== "evento";
+    const includeEvents = type === "all" || type === "evento";
+    const txOperationFilter = type === "buy" || type === "sell" ? type : null;
+
+    let txRows = [];
+    if (includeTx) {
+      const txResult = await pool.query(
+        `
+        SELECT t.id, t.company_id, t.role_category, t.operation_type, t.total_value,
+               t.transaction_date, t.filed_date, c.ticker, c.name AS company_name, c.cnpj
+        FROM transactions t
+        JOIN companies c ON c.id = t.company_id
+        WHERE c.ticker IS NOT NULL
+          AND t.filed_date >= (CURRENT_DATE - $1::int)
+          ${txOperationFilter ? "AND t.operation_type = $2" : "AND t.operation_type IN ('buy','sell')"}
+        ORDER BY t.filed_date DESC NULLS LAST
+        LIMIT 500
+        `,
+        txOperationFilter ? [days, txOperationFilter] : [days]
+      );
+      txRows = txResult.rows;
+    }
+
+    let eventRows = [];
+    if (includeEvents) {
+      const eventResult = await pool.query(
+        `
+        SELECT e.id, e.company_id, e.subject, e.filed_date, e.document_url,
+               c.ticker, c.name AS company_name, c.cnpj
+        FROM corporate_events e
+        JOIN companies c ON c.id = e.company_id
+        WHERE c.ticker IS NOT NULL
+          AND e.filed_date >= (CURRENT_DATE - $1::int)
+        ORDER BY e.filed_date DESC NULLS LAST
+        LIMIT 500
+        `,
+        [days]
+      );
+      eventRows = eventResult.rows;
+    }
+
+    const companyIds = [
+      ...new Set([...txRows.map((r) => r.company_id), ...eventRows.map((r) => r.company_id)]),
+    ];
+    const scores = await getCompanyBuyScores(companyIds);
+
+    const txItems = txRows.map((r) => {
+      const s = scores.get(r.company_id);
+      return {
+        id: `tx-${r.id}`,
+        type: r.operation_type, // "buy" | "sell"
+        ticker: r.ticker,
+        companyName: r.company_name,
+        cnpj: r.cnpj,
+        value: Number(r.total_value) || 0,
+        roleCategory: r.role_category,
+        transactionDate: r.transaction_date,
+        filedDate: r.filed_date,
+        score: s ? s.score : null,
+        relevance: s ? s.relevance : null,
+        distinctRoles: s ? s.distinctRoles : null,
+        multiplier: s ? s.multiplier : null,
+      };
+    });
+
+    const eventItems = eventRows.map((r) => {
+      const s = scores.get(r.company_id);
+      return {
+        id: `ev-${r.id}`,
+        type: "evento",
+        ticker: r.ticker,
+        companyName: r.company_name,
+        cnpj: r.cnpj,
+        subject: r.subject,
+        documentUrl: r.document_url,
+        filedDate: r.filed_date,
+        score: s ? s.score : null,
+        relevance: s ? s.relevance : null,
+        distinctRoles: s ? s.distinctRoles : null,
+        multiplier: s ? s.multiplier : null,
+      };
+    });
+
+    let items = [...txItems, ...eventItems];
+
+    const sorters = {
+      recent: (a, b) => new Date(b.filedDate || 0) - new Date(a.filedDate || 0),
+      score: (a, b) => (b.score ?? -1) - (a.score ?? -1),
+      value: (a, b) => (b.value ?? -1) - (a.value ?? -1),
+      insiders: (a, b) => (b.distinctRoles ?? -1) - (a.distinctRoles ?? -1),
+      impact: (a, b) => (b.multiplier ?? -1) - (a.multiplier ?? -1),
+    };
+    items.sort(sorters[sort] || sorters.recent);
+
+    const total = items.length;
+    const page = items.slice(offset, offset + limit);
+
+    const lastUpdateResult = await pool.query(
+      `SELECT GREATEST(
+         (SELECT MAX(created_at) FROM transactions),
+         (SELECT MAX(created_at) FROM corporate_events)
+       ) AS last_update`
+    );
+
+    res.json({
+      items: page,
+      total,
+      hasMore: offset + limit < total,
+      lastUpdate: lastUpdateResult.rows[0].last_update,
+    });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/ranking/companies", async (req, res) => {
   try {
     const days = req.query.days ? Number(req.query.days) : null;
