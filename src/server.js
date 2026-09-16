@@ -744,7 +744,54 @@ async function sendWatchlistNotifications(since) {
 
   const tickers = [...changedTickers.keys()];
   const companyIds = [...changedTickers.values()].map((v) => v.companyId);
-  const scores = await getCompanyBuyScores(companyIds);
+
+  // Sinal de Atenção (venda acima do padrão histórico DA PRÓPRIA empresa,
+  // sem contar o controlador) — mesma lógica do Painel de Sinais e do
+  // filtro "Atenção" do Radar, agora reaproveitada pra decidir notificação.
+  const attentionByCompany = new Map();
+  for (const companyId of companyIds) {
+    const recentResult = await pool.query(
+      `
+      SELECT
+        SUM(CASE WHEN operation_type = 'buy' THEN total_value ELSE 0 END) AS bought,
+        SUM(CASE WHEN operation_type = 'sell' THEN total_value ELSE 0 END) AS sold
+      FROM transactions
+      WHERE company_id = $1
+        AND transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+        AND role_category != 'Controlador ou Vinculado'
+      `,
+      [companyId]
+    );
+    const bought = Number(recentResult.rows[0].bought) || 0;
+    const sold = Number(recentResult.rows[0].sold) || 0;
+    const netValue = bought - sold;
+    if (netValue >= 0) continue;
+
+    const monthlyResult = await pool.query(
+      `
+      SELECT SUM(CASE WHEN operation_type = 'buy' THEN total_value ELSE -total_value END) AS net_month
+      FROM transactions
+      WHERE company_id = $1
+        AND transaction_date IS NOT NULL
+        AND role_category != 'Controlador ou Vinculado'
+      GROUP BY DATE_TRUNC('month', transaction_date)
+      `,
+      [companyId]
+    );
+    const monthlyNets = monthlyResult.rows
+      .map((r) => Math.abs(Number(r.net_month) || 0))
+      .filter((v) => v > 0)
+      .sort((a, b) => a - b);
+    if (monthlyNets.length < 6) continue; // histórico insuficiente
+
+    const medianMonthly = monthlyNets[Math.floor(monthlyNets.length / 2)];
+    if (medianMonthly <= 0) continue;
+
+    const multiplier = Math.abs(netValue) / (medianMonthly * 12);
+    if (multiplier >= 2) {
+      attentionByCompany.set(companyId, { multiplier: Math.round(multiplier * 10) / 10, netValue });
+    }
+  }
 
   const subsResult = await pool.query(
     `
@@ -764,38 +811,45 @@ async function sendWatchlistNotifications(since) {
   const messages = [];
   for (const r of subsResult.rows) {
     const change = changedTickers.get(r.ticker);
-    const score = scores.get(change.companyId);
+    const attention = attentionByCompany.get(change.companyId);
     const prefs = r.alert_preferences || {};
 
     const hasNewEvent = change.eventCount > 0;
     const hasMultiInsider = change.rolesChanged.size >= 2;
-    const scoreValue = score ? score.score : 0;
-    const recentValue = score ? score.recentValue : 0;
+    const hasAttention = Boolean(attention);
 
     // Preferências, com default sensato caso a coluna venha vazia
     const wantsNewEvent = prefs.newEvent !== false;
     const wantsMultiInsider = prefs.multiInsider !== false;
-    const minScore = prefs.minScore ?? 30;
-    const minValue = prefs.minValue ?? null;
+    const wantsAttention = prefs.attentionSignal !== false;
 
-    // Passa se QUALQUER critério ativado bater — não precisa bater todos
     const matchesEvent = hasNewEvent && wantsNewEvent;
     const matchesMultiInsider = hasMultiInsider && wantsMultiInsider;
-    const matchesScore = scoreValue >= minScore;
-    const matchesValue = minValue == null || recentValue >= minValue;
+    const matchesAttention = hasAttention && wantsAttention;
 
-    const shouldNotify = (matchesEvent || matchesMultiInsider || matchesScore) && matchesValue;
+    const shouldNotify = matchesEvent || matchesMultiInsider || matchesAttention;
     if (!shouldNotify) continue;
 
-    const parts = [];
-    if (change.txCount > 0) parts.push(`${change.txCount} negociação(ões) de insider`);
-    if (change.eventCount > 0) parts.push(`${change.eventCount} fato(s) relevante(s)`);
+    // Explica o "porquê" na própria notificação — prioriza o motivo mais
+    // forte (Atenção > múltiplos insiders > novo evento) em vez de só
+    // contar quantas negociações aconteceram.
+    let body;
+    if (matchesAttention) {
+      body = `Venda de insider está ${attention.multiplier}× acima do padrão histórico dessa empresa. Isso não é recomendação de investimento.`;
+    } else if (matchesMultiInsider) {
+      body = `${change.rolesChanged.size} categorias de cargo diferentes negociaram essa semana — sinal de cluster. Isso não é recomendação de investimento.`;
+    } else {
+      const parts = [];
+      if (change.txCount > 0) parts.push(`${change.txCount} negociação(ões) de insider`);
+      if (change.eventCount > 0) parts.push(`${change.eventCount} fato(s) relevante(s)`);
+      body = `${parts.join(" e ")} desde a última atualização. Isso não é recomendação de investimento.`;
+    }
 
     messages.push({
       to: r.expo_push_token,
       sound: "default",
       title: `Nova movimentação em ${r.ticker}`,
-      body: `${parts.join(" e ")} desde a última atualização (score ${scoreValue}/100). Isso não é recomendação de investimento.`,
+      body,
       data: { ticker: r.ticker },
     });
   }
