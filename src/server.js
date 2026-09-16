@@ -1203,13 +1203,21 @@ app.get("/api/radar", async (req, res) => {
 // uma visão útil sem precisar de nova fonte de dado.
 function categorizeEvent(subject) {
   const s = (subject || "").toLowerCase();
-  if (s.includes("recompra")) return "Recompra";
+  // A CVM usa "aquisição de ações de emissão da própria companhia" como
+  // termo formal pra recompra — precisa checar isso ANTES do M&A genérico,
+  // senão a palavra "aquisição" faz cair na categoria errada.
+  if (
+    s.includes("recompra") ||
+    s.includes("emissão da própria") ||
+    s.includes("própria emissão") ||
+    s.includes("ações em tesouraria")
+  )
+    return "Recompra";
   if (
     s.includes("aquisição") ||
     s.includes("fusão") ||
     s.includes("incorporação") ||
-    s.includes("cisão") ||
-    s.includes("conclusão da aquisição")
+    s.includes("cisão")
   )
     return "Aquisição/M&A";
   if (s.includes("controlador") || s.includes("acordo de acionistas") || s.includes("controle"))
