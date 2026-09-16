@@ -1271,6 +1271,90 @@ function formatCompactBRLServer(value) {
   return `${sign}R$${abs.toFixed(0)}`;
 }
 
+// ─────────────────────────────────────────────────────────────
+// EMPRESAS EM ATENÇÃO — mesma lógica do Painel de Sinais
+// (Administradores), mas calculada em lote pra todas as empresas
+// de uma vez, pra alimentar um filtro no Radar. Reaproveita a
+// comparação com o padrão histórico DA PRÓPRIA empresa, excluindo
+// o acionista controlador (mesmo motivo do painel individual).
+// ─────────────────────────────────────────────────────────────
+app.get("/api/companies-with-attention", async (req, res) => {
+  try {
+    const recentResult = await pool.query(
+      `
+      SELECT company_id,
+        SUM(CASE WHEN operation_type = 'buy' THEN total_value ELSE 0 END) AS bought,
+        SUM(CASE WHEN operation_type = 'sell' THEN total_value ELSE 0 END) AS sold
+      FROM transactions
+      WHERE transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+        AND role_category != 'Controlador ou Vinculado'
+      GROUP BY company_id
+      `
+    );
+
+    if (recentResult.rows.length === 0) return res.json({ tickers: [] });
+
+    const companyIds = recentResult.rows.map((r) => r.company_id);
+
+    const monthlyResult = await pool.query(
+      `
+      SELECT company_id, DATE_TRUNC('month', transaction_date) AS month,
+        SUM(CASE WHEN operation_type = 'buy' THEN total_value ELSE -total_value END) AS net_month
+      FROM transactions
+      WHERE company_id = ANY($1::int[])
+        AND transaction_date IS NOT NULL
+        AND role_category != 'Controlador ou Vinculado'
+      GROUP BY company_id, DATE_TRUNC('month', transaction_date)
+      `,
+      [companyIds]
+    );
+    const monthlyByCompany = new Map();
+    for (const r of monthlyResult.rows) {
+      if (!monthlyByCompany.has(r.company_id)) monthlyByCompany.set(r.company_id, []);
+      monthlyByCompany.get(r.company_id).push(Math.abs(Number(r.net_month) || 0));
+    }
+
+    const companiesResult = await pool.query(
+      `SELECT id, ticker, name FROM companies WHERE id = ANY($1::int[]) AND ticker IS NOT NULL`,
+      [companyIds]
+    );
+    const companyById = new Map(companiesResult.rows.map((c) => [c.id, c]));
+
+    const attention = [];
+    for (const r of recentResult.rows) {
+      const company = companyById.get(r.company_id);
+      if (!company) continue;
+
+      const bought = Number(r.bought) || 0;
+      const sold = Number(r.sold) || 0;
+      const netValue = bought - sold;
+      if (netValue >= 0) continue; // só "atenção" faz sentido pra venda acima do padrão
+
+      const monthlyNets = (monthlyByCompany.get(r.company_id) || []).filter((v) => v > 0);
+      if (monthlyNets.length < 6) continue; // histórico insuficiente pra comparar
+
+      const sorted = [...monthlyNets].sort((a, b) => a - b);
+      const medianMonthly = sorted[Math.floor(sorted.length / 2)];
+      if (medianMonthly <= 0) continue;
+
+      const multiplier = Math.abs(netValue) / (medianMonthly * 12);
+      if (multiplier >= 2) {
+        attention.push({
+          ticker: company.ticker,
+          companyName: company.name,
+          multiplier: Math.round(multiplier * 10) / 10,
+          netValue,
+        });
+      }
+    }
+
+    attention.sort((a, b) => b.multiplier - a.multiplier);
+    res.json({ tickers: attention });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
   try {
     const companyResult = await pool.query(
