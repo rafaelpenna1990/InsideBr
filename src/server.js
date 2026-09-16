@@ -130,14 +130,14 @@ const { XMLParser } = require("fast-xml-parser");
 const newsCache = new Map();
 const NEWS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora
 
-async function fetchCompanyNews(companyName) {
-  const cached = newsCache.get(companyName);
+async function fetchGoogleNews(query, cacheKey) {
+  const cached = newsCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < NEWS_CACHE_TTL_MS) {
     return cached.data;
   }
 
-  const query = encodeURIComponent(`"${companyName}"`);
-  const url = `https://news.google.com/rss/search?q=${query}&hl=pt-BR&gl=BR&ceid=BR:pt-419`;
+  const encodedQuery = encodeURIComponent(query);
+  const url = `https://news.google.com/rss/search?q=${encodedQuery}&hl=pt-BR&gl=BR&ceid=BR:pt-419`;
 
   const response = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; InsideBR/1.0)" },
@@ -149,15 +149,19 @@ async function fetchCompanyNews(companyName) {
   const parsed = parser.parse(xml);
 
   const rawItems = parsed?.rss?.channel?.item || [];
-  const items = (Array.isArray(rawItems) ? rawItems : [rawItems]).slice(0, 8).map((item) => ({
+  const items = (Array.isArray(rawItems) ? rawItems : [rawItems]).slice(0, 12).map((item) => ({
     title: typeof item.title === "string" ? item.title : "",
     link: typeof item.link === "string" ? item.link : "",
     source: item.source?.["#text"] || item.source || null,
     pubDate: item.pubDate || null,
   }));
 
-  newsCache.set(companyName, { data: items, fetchedAt: Date.now() });
+  newsCache.set(cacheKey, { data: items, fetchedAt: Date.now() });
   return items;
+}
+
+async function fetchCompanyNews(companyName) {
+  return fetchGoogleNews(`"${companyName}"`, companyName);
 }
 
 app.get("/api/companies/:cnpj/news", async (req, res) => {
@@ -170,6 +174,15 @@ app.get("/api/companies/:cnpj/news", async (req, res) => {
       return res.status(404).json({ status: "não encontrado" });
     }
     const news = await fetchCompanyNews(companyResult.rows[0].name);
+    res.json(news);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/market/news", async (req, res) => {
+  try {
+    const news = await fetchGoogleNews("B3 bolsa de valores ações mercado", "market-top-stories");
     res.json(news);
   } catch (err) {
     res.status(500).json({ status: "erro", message: err.message });
