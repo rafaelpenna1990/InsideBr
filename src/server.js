@@ -1284,6 +1284,11 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
     const signals = [];
 
     // ── Administradores: saldo líquido de insiders nos últimos 12 meses ──
+    // Exclui o "Controlador ou Vinculado" de propósito — um governo ou
+    // holding vendendo um bloco bilionário de ações (desinvestimento) é
+    // um sinal completamente diferente de um diretor negociando a
+    // própria posição, e misturar os dois quebra qualquer comparação
+    // estatística (a baseline fica pequena, o total vira absurdo).
     const tradesResult = await pool.query(
       `
       SELECT
@@ -1292,7 +1297,9 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
         SUM(CASE WHEN operation_type = 'buy' THEN quantity ELSE 0 END) AS bought_qty,
         SUM(CASE WHEN operation_type = 'sell' THEN quantity ELSE 0 END) AS sold_qty
       FROM transactions
-      WHERE company_id = $1 AND transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+      WHERE company_id = $1
+        AND transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+        AND role_category != 'Controlador ou Vinculado'
       `,
       [companyId]
     );
@@ -1323,7 +1330,9 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
           DATE_TRUNC('month', transaction_date) AS month,
           SUM(CASE WHEN operation_type = 'buy' THEN total_value ELSE -total_value END) AS net_month
         FROM transactions
-        WHERE company_id = $1 AND transaction_date IS NOT NULL
+        WHERE company_id = $1
+          AND transaction_date IS NOT NULL
+          AND role_category != 'Controlador ou Vinculado'
         GROUP BY DATE_TRUNC('month', transaction_date)
         `,
         [companyId]
@@ -1360,7 +1369,9 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
         `
         SELECT operation_type, total_value, quantity, transaction_date, role_category
         FROM transactions
-        WHERE company_id = $1 AND transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+        WHERE company_id = $1
+          AND transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+          AND role_category != 'Controlador ou Vinculado'
         ORDER BY total_value DESC NULLS LAST
         LIMIT 5
         `,
@@ -1374,7 +1385,8 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
           (netValue >= 0
             ? `Saldo acumulado (12 meses): compra líquida de ${formatCompactBRLServer(netValue)}${netQty !== 0 ? ` (${netQty.toLocaleString("pt-BR")} ações)` : ""}.`
             : `Saldo acumulado (12 meses): venda líquida de ${formatCompactBRLServer(Math.abs(netValue))}${netQty !== 0 ? ` (${Math.abs(netQty).toLocaleString("pt-BR")} ações)` : ""}.`) +
-          comparisonText,
+          comparisonText +
+          " Não inclui o acionista controlador (esse é outro sinal — vendas de bloco do controlador não representam a mesma coisa que negociação de diretor/conselho).",
         detail: {
           boughtValue: bought,
           soldValue: sold,
