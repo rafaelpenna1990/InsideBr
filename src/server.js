@@ -579,6 +579,28 @@ app.get("/api/debug/ls", async (req, res) => {
   }
 });
 
+// TEMPORÁRIO — acha as maiores transações de uma empresa, pra
+// investigar valor suspeito/fora do padrão.
+app.get("/api/debug/top-transactions/:cnpj", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT t.id, t.operation_type, t.quantity, t.unit_price, t.total_value,
+             t.transaction_date, t.role_category, t.raw_data
+      FROM transactions t
+      JOIN companies c ON c.id = t.company_id
+      WHERE c.cnpj = $1
+      ORDER BY t.total_value DESC NULLS LAST
+      LIMIT 10
+      `,
+      [req.params.cnpj]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/debug/sample-transaction", async (req, res) => {
   try {
     const result = await pool.query(
