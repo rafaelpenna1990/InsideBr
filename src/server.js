@@ -279,11 +279,11 @@ app.get("/api/companies/search", async (req, res) => {
 // INSIDER RADAR / SCORE — mede o quão relevante e fora do padrão
 // está a atividade de compra ou venda, NUNCA previsão de preço.
 //
-// 5 pilares, adaptados ao dado que realmente temos disponível:
-//  1. Valor da movimentação (30 pts) — tamanho absoluto em R$.
-//     O ideal seria comparar com o volume negociado no mercado
-//     daquela ação, mas não temos esse dado hoje — fica documentado
-//     como limitação, não fingimos ter o que não temos.
+// 5 pilares:
+//  1. Valor relativo (30 pts) — % do free float negociado no período,
+//     quando temos esse dado (via Formulário de Referência da CVM).
+//     Sem free float pra essa empresa, cai pro fallback de R$ absoluto,
+//     deixando claro na explicação qual dos dois foi usado.
 //  2. Diversidade de cargos (25 pts) — proxy pra "insiders distintos".
 //     A CVM não dá nome individual no dado aberto que usamos, só
 //     categoria (Diretor, Conselho, Controlador...) — usamos isso
@@ -295,8 +295,9 @@ app.get("/api/companies/search", async (req, res) => {
 //  5. Qualidade dos dados (10 pts) — penaliza quando a fonte não
 //     informou o valor da operação (acontece às vezes na CVM).
 // ─────────────────────────────────────────────────────────────
-function computeExplainableScore({ recentTx, historicalMonthly, windowDays }) {
+function computeExplainableScore({ recentTx, historicalMonthly, windowDays, freeFloatShares }) {
   const recentValue = recentTx.reduce((sum, t) => sum + t.value, 0);
+  const recentShares = recentTx.reduce((sum, t) => sum + (t.quantity || 0), 0);
   const distinctRoles = new Set(recentTx.map((t) => t.roleCategory).filter(Boolean)).size;
   const txCount = recentTx.length;
   const validValueCount = recentTx.filter((t) => t.value > 0).length;
@@ -305,8 +306,20 @@ function computeExplainableScore({ recentTx, historicalMonthly, windowDays }) {
   const sortedHist = [...historicalMonthly].filter((v) => v > 0).sort((a, b) => a - b);
   const median = sortedHist.length ? sortedHist[Math.floor(sortedHist.length / 2)] : 0;
 
-  // Pilar 1 — Valor da movimentação (30 pts)
-  const p1 = Math.min(recentValue / 5_000_000, 1) * 30;
+  // Pilar 1 — Valor relativo (30 pts)
+  let p1 = 0;
+  let percentOfFloat = null;
+  let valueDetail;
+  if (freeFloatShares && freeFloatShares > 0 && recentShares > 0) {
+    percentOfFloat = (recentShares / freeFloatShares) * 100;
+    // 1% do free float negociado por insiders em poucas semanas já é
+    // bastante incomum — usamos isso como teto pra pontuação máxima.
+    p1 = Math.min(percentOfFloat / 1, 1) * 30;
+    valueDetail = `${percentOfFloat.toFixed(3)}% do free float (${recentShares.toLocaleString("pt-BR")} ações) negociadas no período.`;
+  } else {
+    p1 = Math.min(recentValue / 5_000_000, 1) * 30;
+    valueDetail = `R$ ${recentValue.toLocaleString("pt-BR")} no período (sem dado de free float pra essa empresa — usando valor absoluto como alternativa).`;
+  }
 
   // Pilar 2 — Diversidade de cargos (25 pts)
   const p2 = Math.min(distinctRoles / 4, 1) * 25;
@@ -358,10 +371,10 @@ function computeExplainableScore({ recentTx, historicalMonthly, windowDays }) {
   const breakdown = [
     {
       key: "valor",
-      label: "Valor da movimentação",
+      label: percentOfFloat != null ? "Valor relativo (% do free float)" : "Valor da movimentação",
       points: Math.round(p1),
       max: 30,
-      detail: `R$ ${recentValue.toLocaleString("pt-BR")} no período.`,
+      detail: valueDetail,
     },
     {
       key: "cargos",
@@ -399,7 +412,11 @@ function computeExplainableScore({ recentTx, historicalMonthly, windowDays }) {
       "Sem operações registradas nesse período. O score reflete a ausência de atividade recente, não um evento negativo.";
   } else {
     const historyPart = median > 0 ? `, ${(recentValue / median).toFixed(1)}× a mediana histórica da empresa` : "";
-    explanation = `Score ${score}/100 (${relevance.toLowerCase()}) porque ${distinctRoles} categoria(s) de cargo realizaram operações somando R$ ${recentValue.toLocaleString("pt-BR")} em ${windowDays} dias${historyPart}. Isso não é recomendação de investimento.`;
+    const valuePart =
+      percentOfFloat != null
+        ? `${percentOfFloat.toFixed(2)}% do free float`
+        : `R$ ${recentValue.toLocaleString("pt-BR")}`;
+    explanation = `Score ${score}/100 (${relevance.toLowerCase()}) porque ${distinctRoles} categoria(s) de cargo movimentaram ${valuePart} em ${windowDays} dias${historyPart}. Isso não é recomendação de investimento.`;
   }
 
   return {
@@ -411,6 +428,7 @@ function computeExplainableScore({ recentTx, historicalMonthly, windowDays }) {
     historySufficient: hasHistory,
     distinctRoles,
     recentValue,
+    percentOfFloat,
     multiplier: median > 0 ? recentValue / median : null,
   };
 }
@@ -419,6 +437,27 @@ function computeExplainableScore({ recentTx, historicalMonthly, windowDays }) {
 // RANKING — empresas e categorias de cargo com mais atividade de
 // insider (compra), no período pedido (padrão: histórico completo).
 // ─────────────────────────────────────────────────────────────
+// Busca o free float mais recente de cada empresa (uma linha por
+// empresa, a mais atual) — usado pelo Pilar 1 do score.
+async function getFreeFloatShares(companyIds) {
+  const map = new Map();
+  if (companyIds.length === 0) return map;
+
+  const result = await pool.query(
+    `
+    SELECT DISTINCT ON (company_id) company_id, free_float_shares
+    FROM capital_structure
+    WHERE company_id = ANY($1::int[]) AND free_float_shares IS NOT NULL
+    ORDER BY company_id, reference_date DESC
+    `,
+    [companyIds]
+  );
+  for (const r of result.rows) {
+    map.set(r.company_id, Number(r.free_float_shares) || null);
+  }
+  return map;
+}
+
 // Calcula o score de COMPRA (janela fixa de 21 dias, pra bater com o
 // resto do app) pra um lote de empresas de uma vez — evita N+1 query
 // quando o feed tem dezenas de empresas diferentes na mesma página.
@@ -428,7 +467,7 @@ async function getCompanyBuyScores(companyIds) {
 
   const recentResult = await pool.query(
     `
-    SELECT company_id, role_category, total_value, transaction_date
+    SELECT company_id, role_category, total_value, quantity, transaction_date
     FROM transactions
     WHERE operation_type = 'buy'
       AND company_id = ANY($1::int[])
@@ -442,6 +481,7 @@ async function getCompanyBuyScores(companyIds) {
     txByCompany.get(r.company_id).push({
       roleCategory: r.role_category,
       value: Number(r.total_value) || 0,
+      quantity: Number(r.quantity) || 0,
       date: r.transaction_date,
     });
   }
@@ -461,10 +501,17 @@ async function getCompanyBuyScores(companyIds) {
     histByCompany.get(r.company_id).push(Number(r.month_value) || 0);
   }
 
+  const freeFloatByCompany = await getFreeFloatShares(companyIds);
+
   for (const id of companyIds) {
     const recentTx = txByCompany.get(id) || [];
     const historicalMonthly = histByCompany.get(id) || [];
-    const result = computeExplainableScore({ recentTx, historicalMonthly, windowDays: 21 });
+    const result = computeExplainableScore({
+      recentTx,
+      historicalMonthly,
+      windowDays: 21,
+      freeFloatShares: freeFloatByCompany.get(id) || null,
+    });
     scores.set(id, result);
   }
   return scores;
@@ -1039,7 +1086,7 @@ app.get("/api/radar", async (req, res) => {
     // do agregado, pra calcular concentração temporal e qualidade dos dados)
     const recentTxResult = await pool.query(
       `
-      SELECT company_id, role_category, total_value, transaction_date
+      SELECT company_id, role_category, total_value, quantity, transaction_date
       FROM transactions
       WHERE operation_type = 'buy'
         AND transaction_date >= (CURRENT_DATE - $1::int)
@@ -1055,6 +1102,7 @@ app.get("/api/radar", async (req, res) => {
       txByCompany.get(r.company_id).push({
         roleCategory: r.role_category,
         value: Number(r.total_value) || 0,
+        quantity: Number(r.quantity) || 0,
         date: r.transaction_date,
       });
     }
@@ -1075,6 +1123,8 @@ app.get("/api/radar", async (req, res) => {
       if (!historicalByCompany.has(r.company_id)) historicalByCompany.set(r.company_id, []);
       historicalByCompany.get(r.company_id).push(Number(r.month_value) || 0);
     }
+
+    const freeFloatByCompany = await getFreeFloatShares(companyIds);
 
     const companiesResult = await pool.query(
       `SELECT id, name, ticker, cnpj FROM companies WHERE id = ANY($1::int[])`,
@@ -1097,7 +1147,12 @@ app.get("/api/radar", async (req, res) => {
         const recentTx = txByCompany.get(companyId);
         const historicalMonthly = historicalByCompany.get(companyId) || [];
 
-        const result = computeExplainableScore({ recentTx, historicalMonthly, windowDays });
+        const result = computeExplainableScore({
+          recentTx,
+          historicalMonthly,
+          windowDays,
+          freeFloatShares: freeFloatByCompany.get(companyId) || null,
+        });
         if (result.score < RADAR_MIN_SCORE) return null;
 
         const recentValue = recentTx.reduce((sum, t) => sum + t.value, 0);
@@ -1192,10 +1247,13 @@ app.get("/api/companies/:cnpj/score", async (req, res) => {
     }
     const company = companyResult.rows[0];
 
+    const freeFloatMap = await getFreeFloatShares([company.id]);
+    const freeFloatShares = freeFloatMap.get(company.id) || null;
+
     async function computeForOperation(operationType) {
       const recentResult = await pool.query(
         `
-        SELECT role_category, total_value, transaction_date
+        SELECT role_category, total_value, quantity, transaction_date
         FROM transactions
         WHERE company_id = $1
           AND operation_type = $2
@@ -1206,6 +1264,7 @@ app.get("/api/companies/:cnpj/score", async (req, res) => {
       const recentTx = recentResult.rows.map((r) => ({
         roleCategory: r.role_category,
         value: Number(r.total_value) || 0,
+        quantity: Number(r.quantity) || 0,
         date: r.transaction_date,
       }));
 
@@ -1220,7 +1279,7 @@ app.get("/api/companies/:cnpj/score", async (req, res) => {
       );
       const historicalMonthly = historicalResult.rows.map((r) => Number(r.month_value) || 0);
 
-      return computeExplainableScore({ recentTx, historicalMonthly, windowDays });
+      return computeExplainableScore({ recentTx, historicalMonthly, windowDays, freeFloatShares });
     }
 
     const [buy, sell] = await Promise.all([
