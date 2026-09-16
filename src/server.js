@@ -1198,6 +1198,90 @@ app.get("/api/radar", async (req, res) => {
   }
 });
 
+// Categoriza um fato relevante pelo texto do assunto — heurística
+// simples por palavra-chave, não é garantido 100% preciso, mas dá
+// uma visão útil sem precisar de nova fonte de dado.
+function categorizeEvent(subject) {
+  const s = (subject || "").toLowerCase();
+  if (s.includes("recompra")) return "Recompra";
+  if (
+    s.includes("aquisição") ||
+    s.includes("fusão") ||
+    s.includes("incorporação") ||
+    s.includes("cisão") ||
+    s.includes("conclusão da aquisição")
+  )
+    return "Aquisição/M&A";
+  if (s.includes("controlador") || s.includes("acordo de acionistas") || s.includes("controle"))
+    return "Controle";
+  if (
+    s.includes("emissão") ||
+    s.includes("follow-on") ||
+    s.includes("oferta pública") ||
+    s.includes("subscrição") ||
+    s.includes("debênture")
+  )
+    return "Emissão/Dívida";
+  if (s.includes("dividendo") || s.includes("jcp") || s.includes("juros sobre capital"))
+    return "Remuneração";
+  if (s.includes("resultado") || s.includes("lucro") || s.includes("balanço"))
+    return "Resultado";
+  return "Outro";
+}
+
+app.get("/api/companies/:cnpj/capital-events-timeline", async (req, res) => {
+  try {
+    const companyResult = await pool.query(
+      "SELECT id FROM companies WHERE cnpj = $1",
+      [req.params.cnpj]
+    );
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    const companyId = companyResult.rows[0].id;
+
+    const eventsResult = await pool.query(
+      `
+      SELECT id, subject, filed_date, document_url
+      FROM corporate_events
+      WHERE company_id = $1 AND filed_date IS NOT NULL
+      ORDER BY filed_date DESC
+      `,
+      [companyId]
+    );
+
+    const byYear = new Map();
+    for (const row of eventsResult.rows) {
+      const year = new Date(row.filed_date).getFullYear();
+      const category = categorizeEvent(row.subject);
+      if (!byYear.has(year)) byYear.set(year, []);
+      byYear.get(year).push({
+        id: row.id,
+        subject: row.subject,
+        filedDate: row.filed_date,
+        documentUrl: row.document_url,
+        category,
+      });
+    }
+
+    // Um ano pode ter vários fatos relevantes — prioriza os que não
+    // são "Outro"/"Resultado" (mais rotineiros) pra destacar o mais
+    // estrutural daquele ano, mas devolve todos junto.
+    const priority = ["Controle", "Aquisição/M&A", "Recompra", "Emissão/Dívida", "Remuneração", "Resultado", "Outro"];
+    const years = [...byYear.keys()].sort((a, b) => b - a);
+    const timeline = years.map((year) => {
+      const items = byYear.get(year).sort(
+        (a, b) => priority.indexOf(a.category) - priority.indexOf(b.category)
+      );
+      return { year, highlight: items[0], allEvents: items };
+    });
+
+    res.json({ timeline });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/companies/:cnpj/capital-timeline", async (req, res) => {
   try {
     const companyResult = await pool.query(
