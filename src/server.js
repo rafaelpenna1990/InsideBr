@@ -1278,6 +1278,42 @@ function formatCompactBRLServer(value) {
 // comparação com o padrão histórico DA PRÓPRIA empresa, excluindo
 // o acionista controlador (mesmo motivo do painel individual).
 // ─────────────────────────────────────────────────────────────
+app.get("/api/companies/:cnpj/buyback-events", async (req, res) => {
+  try {
+    const companyResult = await pool.query(
+      "SELECT id FROM companies WHERE cnpj = $1",
+      [req.params.cnpj]
+    );
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    const companyId = companyResult.rows[0].id;
+
+    const eventsResult = await pool.query(
+      `
+      SELECT id, subject, filed_date, document_url
+      FROM corporate_events
+      WHERE company_id = $1 AND filed_date IS NOT NULL
+      ORDER BY filed_date DESC
+      `,
+      [companyId]
+    );
+
+    const buybackEvents = eventsResult.rows
+      .filter((r) => categorizeEvent(r.subject) === "Recompra")
+      .map((r) => ({
+        id: r.id,
+        subject: r.subject,
+        filedDate: r.filed_date,
+        documentUrl: r.document_url,
+      }));
+
+    res.json({ events: buybackEvents });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/companies-with-attention", async (req, res) => {
   try {
     const recentResult = await pool.query(
