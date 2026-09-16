@@ -553,6 +553,19 @@ app.post("/api/push-tokens", async (req, res) => {
 // banco. Pode remover depois que confirmar.
 // TEMPORÁRIO — só pra investigar os campos originais da CVM.
 // TEMPORÁRIO — lista os arquivos que o servidor realmente enxerga numa pasta.
+// TEMPORÁRIO — mostra o(s) registro(s) de empresa pra um CNPJ, pra
+// investigar problema de mapeamento de ticker.
+app.get("/api/debug/company/:cnpj", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM companies WHERE cnpj = $1", [
+      req.params.cnpj,
+    ]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/debug/ls", async (req, res) => {
   try {
     const fs = require("fs");
