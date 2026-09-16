@@ -1260,6 +1260,17 @@ function categorizeEvent(subject) {
   return "Outro";
 }
 
+// Mesmo formato compacto usado no app (R$22.2B, R$20.3M, R$25.77K) —
+// usado aqui pros textos que o backend já monta prontos.
+function formatCompactBRLServer(value) {
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1_000_000_000) return `${sign}R$${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${sign}R$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}R$${(abs / 1_000).toFixed(2)}K`;
+  return `${sign}R$${abs.toFixed(0)}`;
+}
+
 app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
   try {
     const companyResult = await pool.query(
@@ -1300,13 +1311,40 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
       });
     } else {
       const netValue = bought - sold;
+
+      // Busca as maiores transações do período pra explicar o "porquê"
+      // quando a pessoa expandir o card.
+      const topTxResult = await pool.query(
+        `
+        SELECT operation_type, total_value, quantity, transaction_date, role_category
+        FROM transactions
+        WHERE company_id = $1 AND transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+        ORDER BY total_value DESC NULLS LAST
+        LIMIT 5
+        `,
+        [companyId]
+      );
+
       signals.push({
         category: "Administradores",
         status: netValue > 0 ? "positivo" : netValue < 0 ? "atencao" : "neutro",
         headline:
           netValue >= 0
-            ? `Saldo acumulado (12 meses): compra líquida de R$ ${netValue.toLocaleString("pt-BR")}${netQty !== 0 ? ` (${netQty.toLocaleString("pt-BR")} ações)` : ""}.`
-            : `Saldo acumulado (12 meses): venda líquida de R$ ${Math.abs(netValue).toLocaleString("pt-BR")}${netQty !== 0 ? ` (${Math.abs(netQty).toLocaleString("pt-BR")} ações)` : ""}.`,
+            ? `Saldo acumulado (12 meses): compra líquida de ${formatCompactBRLServer(netValue)}${netQty !== 0 ? ` (${netQty.toLocaleString("pt-BR")} ações)` : ""}.`
+            : `Saldo acumulado (12 meses): venda líquida de ${formatCompactBRLServer(Math.abs(netValue))}${netQty !== 0 ? ` (${Math.abs(netQty).toLocaleString("pt-BR")} ações)` : ""}.`,
+        detail: {
+          boughtValue: bought,
+          soldValue: sold,
+          boughtQty,
+          soldQty,
+          topTransactions: topTxResult.rows.map((r) => ({
+            operationType: r.operation_type,
+            totalValue: Number(r.total_value) || 0,
+            quantity: Number(r.quantity) || 0,
+            transactionDate: r.transaction_date,
+            roleCategory: r.role_category,
+          })),
+        },
       });
     }
 
@@ -1332,6 +1370,9 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
         recompraEvents.length > 0
           ? `${recompraEvents.length} evento(s) de recompra nos últimos 12 meses.`
           : "Nenhum programa de recompra identificado nos últimos 12 meses.",
+      detail: {
+        events: recompraEvents.slice(0, 5).map((e) => ({ subject: e.subject, filedDate: e.filed_date })),
+      },
     });
 
     signals.push({
@@ -1341,6 +1382,9 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
         emissaoEvents.length > 0
           ? `${emissaoEvents.length} evento(s) de emissão/dívida nos últimos 12 meses.`
           : "Nenhuma emissão ou captação de dívida identificada nos últimos 12 meses.",
+      detail: {
+        events: emissaoEvents.slice(0, 5).map((e) => ({ subject: e.subject, filedDate: e.filed_date })),
+      },
     });
 
     // ── Estrutura Acionária: free float atual e tendência ──
@@ -1377,6 +1421,12 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
         category: "Estrutura Acionária",
         status,
         headline: `Free float atual: ${current.toFixed(2)}%${trendText}.`,
+        detail: {
+          current,
+          currentDate: capitalResult.rows[0].reference_date,
+          previous,
+          previousDate: capitalResult.rows.length > 1 ? capitalResult.rows[1].reference_date : null,
+        },
       });
     }
 
