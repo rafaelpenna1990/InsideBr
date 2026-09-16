@@ -1001,6 +1001,14 @@ app.post("/api/internal/ingest-all", async (req, res) => {
       await runMapping();
       console.log("[auto-ingest] Mapeamento de tickers concluído.");
 
+      try {
+        const { ingestYear: ingestFRE } = require("./ingest/fetchFRE");
+        await ingestFRE(year);
+        console.log("[auto-ingest] Formulário de Referência (free float/controlador) concluído.");
+      } catch (freErr) {
+        console.error("[auto-ingest] Falha no FRE (não crítico, seguindo):", freErr.message);
+      }
+
       await sendWatchlistNotifications(ingestStartedAt);
 
       console.log(`[auto-ingest] Atualização automática concluída com sucesso (${new Date().toISOString()})`);
