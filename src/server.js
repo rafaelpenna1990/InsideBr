@@ -1109,6 +1109,55 @@ app.get("/api/radar", async (req, res) => {
   }
 });
 
+app.get("/api/companies/:cnpj/net-position", async (req, res) => {
+  try {
+    const companyResult = await pool.query(
+      "SELECT id FROM companies WHERE cnpj = $1",
+      [req.params.cnpj]
+    );
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    const companyId = companyResult.rows[0].id;
+
+    // Agrupa por mês (usando a data REAL da operação) — compra soma,
+    // venda subtrai. O front acumula esses valores pra desenhar a
+    // linha de saldo líquido crescendo/caindo ao longo do tempo.
+    const result = await pool.query(
+      `
+      SELECT
+        DATE_TRUNC('month', transaction_date) AS month,
+        SUM(CASE WHEN operation_type = 'buy' THEN total_value ELSE 0 END) AS bought,
+        SUM(CASE WHEN operation_type = 'sell' THEN total_value ELSE 0 END) AS sold
+      FROM transactions
+      WHERE company_id = $1 AND transaction_date IS NOT NULL
+      GROUP BY DATE_TRUNC('month', transaction_date)
+      ORDER BY month ASC
+      `,
+      [companyId]
+    );
+
+    let cumulative = 0;
+    const series = result.rows.map((r) => {
+      const bought = Number(r.bought) || 0;
+      const sold = Number(r.sold) || 0;
+      const net = bought - sold;
+      cumulative += net;
+      return {
+        month: r.month,
+        bought,
+        sold,
+        net,
+        cumulative,
+      };
+    });
+
+    res.json({ series });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/companies/:cnpj/score", async (req, res) => {
   try {
     const windowDays = Number(req.query.days) || 21;
