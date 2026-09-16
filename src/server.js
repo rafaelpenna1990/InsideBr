@@ -1198,6 +1198,98 @@ app.get("/api/radar", async (req, res) => {
   }
 });
 
+app.get("/api/companies/:cnpj/capital-timeline", async (req, res) => {
+  try {
+    const companyResult = await pool.query(
+      "SELECT id FROM companies WHERE cnpj = $1",
+      [req.params.cnpj]
+    );
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    const companyId = companyResult.rows[0].id;
+
+    // Free float ano a ano (uma linha por ano, a mais recente daquele ano)
+    const capitalResult = await pool.query(
+      `
+      SELECT DISTINCT ON (EXTRACT(YEAR FROM reference_date))
+        EXTRACT(YEAR FROM reference_date)::int AS year,
+        free_float_percent,
+        free_float_shares,
+        reference_date
+      FROM capital_structure
+      WHERE company_id = $1
+      ORDER BY EXTRACT(YEAR FROM reference_date), reference_date DESC
+      `,
+      [companyId]
+    );
+
+    // Compra/venda de insider agregado por ano — vira os pontos verdes/
+    // vermelhos marcados sobre a linha do free float
+    const tradesResult = await pool.query(
+      `
+      SELECT
+        EXTRACT(YEAR FROM transaction_date)::int AS year,
+        operation_type,
+        COUNT(*) AS count,
+        SUM(total_value) AS total_value
+      FROM transactions
+      WHERE company_id = $1 AND transaction_date IS NOT NULL
+      GROUP BY EXTRACT(YEAR FROM transaction_date), operation_type
+      `,
+      [companyId]
+    );
+
+    // Controlador ano a ano — pra detectar mudança de controle
+    const controllerResult = await pool.query(
+      `
+      SELECT DISTINCT ON (EXTRACT(YEAR FROM reference_date))
+        EXTRACT(YEAR FROM reference_date)::int AS year,
+        shareholder_name,
+        reference_date
+      FROM controlling_shareholders
+      WHERE company_id = $1
+      ORDER BY EXTRACT(YEAR FROM reference_date), reference_date DESC
+      `,
+      [companyId]
+    );
+
+    const events = [];
+    for (const r of tradesResult.rows) {
+      events.push({
+        year: r.year,
+        type: r.operation_type === "buy" ? "compra" : "venda",
+        count: Number(r.count),
+        totalValue: Number(r.total_value) || 0,
+      });
+    }
+
+    let previousController = null;
+    for (const r of controllerResult.rows) {
+      if (previousController && previousController !== r.shareholder_name) {
+        events.push({
+          year: r.year,
+          type: "controle",
+          detail: `Controlador mudou para: ${r.shareholder_name}`,
+        });
+      }
+      previousController = r.shareholder_name;
+    }
+
+    res.json({
+      series: capitalResult.rows.map((r) => ({
+        year: r.year,
+        freeFloatPercent: r.free_float_percent != null ? Number(r.free_float_percent) : null,
+        freeFloatShares: r.free_float_shares != null ? Number(r.free_float_shares) : null,
+      })),
+      events: events.sort((a, b) => a.year - b.year),
+      hasCapitalData: capitalResult.rows.length > 0,
+    });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/companies/:cnpj/net-position", async (req, res) => {
   try {
     const companyResult = await pool.query(
