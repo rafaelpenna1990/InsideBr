@@ -85,6 +85,36 @@ CREATE TABLE IF NOT EXISTS watchlist_subscriptions (
   UNIQUE(push_token_id, ticker)
 );
 
+CREATE TABLE IF NOT EXISTS capital_structure (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER REFERENCES companies(id),
+  reference_date DATE NOT NULL,
+  free_float_shares BIGINT,
+  free_float_percent NUMERIC(7,3),
+  shareholders_pf INTEGER,
+  shareholders_pj INTEGER,
+  shareholders_institutional INTEGER,
+  last_assembly_date DATE,
+  raw_hash VARCHAR(64) UNIQUE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_capital_structure_company ON capital_structure(company_id);
+CREATE INDEX IF NOT EXISTS idx_capital_structure_date ON capital_structure(reference_date);
+
+CREATE TABLE IF NOT EXISTS controlling_shareholders (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER REFERENCES companies(id),
+  reference_date DATE NOT NULL,
+  shareholder_name TEXT,
+  shareholder_document VARCHAR(30),
+  percent_total NUMERIC(7,3),
+  raw_hash VARCHAR(64) UNIQUE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_controlling_company ON controlling_shareholders(company_id);
+
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
