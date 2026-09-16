@@ -1312,6 +1312,48 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
     } else {
       const netValue = bought - sold;
 
+      // Compara com o padrão HISTÓRICO MENSAL da própria empresa (mesma
+      // lógica do Score principal) — em vez de "venda = sempre atenção,
+      // compra = sempre positivo" pra todo mundo igual. Uma venda dentro
+      // do padrão normal da empresa não deveria assustar; uma venda bem
+      // maior que o normal, sim.
+      const monthlyResult = await pool.query(
+        `
+        SELECT
+          DATE_TRUNC('month', transaction_date) AS month,
+          SUM(CASE WHEN operation_type = 'buy' THEN total_value ELSE -total_value END) AS net_month
+        FROM transactions
+        WHERE company_id = $1 AND transaction_date IS NOT NULL
+        GROUP BY DATE_TRUNC('month', transaction_date)
+        `,
+        [companyId]
+      );
+      const monthlyNets = monthlyResult.rows.map((r) => Math.abs(Number(r.net_month) || 0));
+      const sortedMonthly = [...monthlyNets].filter((v) => v > 0).sort((a, b) => a - b);
+      const medianMonthly = sortedMonthly.length
+        ? sortedMonthly[Math.floor(sortedMonthly.length / 2)]
+        : 0;
+      const hasHistory = sortedMonthly.length >= 6; // menos de 6 meses de histórico = referência fraca
+
+      const typicalAnnual = medianMonthly * 12;
+      const multiplier = typicalAnnual > 0 ? Math.abs(netValue) / typicalAnnual : null;
+
+      let status;
+      let comparisonText = "";
+      if (!hasHistory || multiplier == null) {
+        status = netValue >= 0 ? "positivo" : "neutro"; // sem base de comparação, não classifica como atenção
+        comparisonText = " Histórico insuficiente pra comparar com o padrão da empresa.";
+      } else if (netValue >= 0) {
+        status = "positivo";
+        comparisonText = ` Isso é ${multiplier.toFixed(1)}× o padrão mensal histórico da empresa.`;
+      } else if (multiplier >= 2) {
+        status = "atencao"; // venda bem acima do padrão normal dessa empresa específica
+        comparisonText = ` Isso é ${multiplier.toFixed(1)}× o padrão mensal histórico da empresa — bem acima do normal pra ela.`;
+      } else {
+        status = "neutro"; // venda, mas dentro do padrão normal dessa empresa
+        comparisonText = ` Isso é ${multiplier.toFixed(1)}× o padrão mensal histórico da empresa — dentro do normal pra ela.`;
+      }
+
       // Busca as maiores transações do período pra explicar o "porquê"
       // quando a pessoa expandir o card.
       const topTxResult = await pool.query(
@@ -1327,16 +1369,19 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
 
       signals.push({
         category: "Administradores",
-        status: netValue > 0 ? "positivo" : netValue < 0 ? "atencao" : "neutro",
+        status,
         headline:
-          netValue >= 0
+          (netValue >= 0
             ? `Saldo acumulado (12 meses): compra líquida de ${formatCompactBRLServer(netValue)}${netQty !== 0 ? ` (${netQty.toLocaleString("pt-BR")} ações)` : ""}.`
-            : `Saldo acumulado (12 meses): venda líquida de ${formatCompactBRLServer(Math.abs(netValue))}${netQty !== 0 ? ` (${Math.abs(netQty).toLocaleString("pt-BR")} ações)` : ""}.`,
+            : `Saldo acumulado (12 meses): venda líquida de ${formatCompactBRLServer(Math.abs(netValue))}${netQty !== 0 ? ` (${Math.abs(netQty).toLocaleString("pt-BR")} ações)` : ""}.`) +
+          comparisonText,
         detail: {
           boughtValue: bought,
           soldValue: sold,
           boughtQty,
           soldQty,
+          medianMonthly,
+          hasHistory,
           topTransactions: topTxResult.rows.map((r) => ({
             operationType: r.operation_type,
             totalValue: Number(r.total_value) || 0,
@@ -1388,44 +1433,81 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
     });
 
     // ── Estrutura Acionária: free float atual e tendência ──
-    const capitalResult = await pool.query(
+    // Busca TODO o histórico (não só 2 pontos) pra saber qual é a
+    // variação normal dessa empresa específica — uma queda de 2pp pode
+    // ser rotina numa empresa e incomum em outra.
+    const capitalHistoryResult = await pool.query(
       `
       SELECT free_float_percent, reference_date
       FROM capital_structure
       WHERE company_id = $1
-      ORDER BY reference_date DESC
-      LIMIT 2
+      ORDER BY reference_date ASC
       `,
       [companyId]
     );
-    if (capitalResult.rows.length === 0) {
+    if (capitalHistoryResult.rows.length === 0) {
       signals.push({
         category: "Estrutura Acionária",
         status: "neutro",
         headline: "Sem dado de estrutura de capital disponível.",
       });
     } else {
-      const current = Number(capitalResult.rows[0].free_float_percent);
-      const previous =
-        capitalResult.rows.length > 1 ? Number(capitalResult.rows[1].free_float_percent) : null;
+      const rows = capitalHistoryResult.rows;
+      const current = Number(rows[rows.length - 1].free_float_percent);
+      const previous = rows.length > 1 ? Number(rows[rows.length - 2].free_float_percent) : null;
+
       let trendText = "";
       let status = "positivo";
+      let comparisonText = "";
+
       if (previous != null) {
         const diff = current - previous;
-        if (Math.abs(diff) >= 1) {
-          trendText = diff > 0 ? ` (subiu ${diff.toFixed(1)}pp no último ano)` : ` (caiu ${Math.abs(diff).toFixed(1)}pp no último ano)`;
-          if (diff < -3) status = "atencao"; // queda forte de free float = mais concentração
+
+        // Variações ano a ano ANTERIORES (excluindo a mais recente, que é
+        // a que estamos avaliando) — isso define o "normal" pra essa empresa.
+        const priorDiffs = [];
+        for (let i = 1; i < rows.length - 1; i++) {
+          priorDiffs.push(
+            Math.abs(Number(rows[i].free_float_percent) - Number(rows[i - 1].free_float_percent))
+          );
+        }
+        const hasHistory = priorDiffs.length >= 2;
+        const sortedDiffs = [...priorDiffs].sort((a, b) => a - b);
+        const medianDiff = sortedDiffs.length
+          ? sortedDiffs[Math.floor(sortedDiffs.length / 2)]
+          : 0;
+
+        if (Math.abs(diff) >= 0.5) {
+          trendText =
+            diff > 0
+              ? ` (subiu ${diff.toFixed(1)}pp no último ano)`
+              : ` (caiu ${Math.abs(diff).toFixed(1)}pp no último ano)`;
+        }
+
+        if (!hasHistory) {
+          status = diff >= 0 ? "positivo" : "neutro";
+          comparisonText = " Histórico insuficiente pra comparar com o padrão da empresa.";
+        } else if (diff < 0 && medianDiff > 0 && Math.abs(diff) >= medianDiff * 2) {
+          status = "atencao"; // queda bem maior que a variação normal dessa empresa
+          comparisonText = ` Isso é ${(Math.abs(diff) / medianDiff).toFixed(1)}× a variação anual típica dessa empresa.`;
+        } else if (diff < 0 && medianDiff === 0 && Math.abs(diff) >= 1) {
+          status = "atencao"; // empresa historicamente estável, qualquer queda chama atenção
+          comparisonText = " Essa empresa costuma ter free float estável — essa queda foge do padrão dela.";
+        } else {
+          status = diff >= 0 ? "positivo" : "neutro";
+          if (diff < 0) comparisonText = " Dentro da variação normal dessa empresa.";
         }
       }
+
       signals.push({
         category: "Estrutura Acionária",
         status,
-        headline: `Free float atual: ${current.toFixed(2)}%${trendText}.`,
+        headline: `Free float atual: ${current.toFixed(2)}%${trendText}.${comparisonText}`,
         detail: {
           current,
-          currentDate: capitalResult.rows[0].reference_date,
+          currentDate: rows[rows.length - 1].reference_date,
           previous,
-          previousDate: capitalResult.rows.length > 1 ? capitalResult.rows[1].reference_date : null,
+          previousDate: rows.length > 1 ? rows[rows.length - 2].reference_date : null,
         },
       });
     }
