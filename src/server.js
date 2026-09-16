@@ -505,6 +505,19 @@ app.post("/api/push-tokens", async (req, res) => {
 // TEMPORÁRIO — só pra conferir se uma migração de verdade aplicou no
 // banco. Pode remover depois que confirmar.
 // TEMPORÁRIO — só pra investigar os campos originais da CVM.
+// TEMPORÁRIO — lista os arquivos que o servidor realmente enxerga numa pasta.
+app.get("/api/debug/ls", async (req, res) => {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    const dir = path.join(__dirname, "ingest");
+    const files = fs.readdirSync(dir);
+    res.json({ dir, files });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/debug/sample-transaction", async (req, res) => {
   try {
     const result = await pool.query(
