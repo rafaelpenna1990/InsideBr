@@ -27,6 +27,15 @@ UPDATE companies SET ticker = 'BBDC4' WHERE name = 'BRADESCO LEASING S.A. - ARRE
 UPDATE companies SET ticker = 'PSSA3' WHERE name = 'PORTO SERVIÇO S.A';
 UPDATE companies SET ticker = 'TIMS3' WHERE name = 'TIM BRASIL SERVIÇOS E PARTICIPAÇÕES S.A.';
 
+-- Corrige empresas que caíram erradas no MESMO ticker (BBAS3) por causa
+-- de um bug no script de mapeamento original (confiança baixa tratada
+-- como alta) — achado ao investigar tickers duplicados.
+UPDATE companies SET ticker = 'DAYC4' WHERE name = 'BCO DAYCOVAL S.A.';
+UPDATE companies SET ticker = 'STBP3' WHERE name = 'SANTOS BRASIL PARTICIPAÇÕES S.A.';
+-- Brasil Biofuels: não achamos ticker confirmado (provavelmente não é
+-- listada na B3) — remove o mapeamento errado, volta pra "sem match".
+UPDATE companies SET ticker = NULL WHERE name = 'BRASIL BIOFUELS S.A.';
+
 -- Empresas conhecidas que ficaram "sem match" na busca automática
 UPDATE companies SET ticker = 'EMBR3' WHERE name = 'EMBRAER S.A.';
 UPDATE companies SET ticker = 'BRFS3' WHERE name = 'BRF S.A.';
