@@ -1671,6 +1671,67 @@ app.get("/api/companies/:cnpj/insider-positions", cacheMiddleware, async (req, r
   }
 });
 
+app.get("/api/companies/:cnpj/financials", cacheMiddleware, async (req, res) => {
+  try {
+    const companyResult = await pool.query("SELECT id FROM companies WHERE cnpj = $1", [
+      req.params.cnpj,
+    ]);
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    const companyId = companyResult.rows[0].id;
+
+    const rowsResult = await pool.query(
+      `
+      SELECT statement_type, reference_date, period_end, account_code, account_description, value
+      FROM financial_statements
+      WHERE company_id = $1
+      ORDER BY reference_date DESC
+      `,
+      [companyId]
+    );
+    if (rowsResult.rows.length === 0) {
+      return res.json({ available: false });
+    }
+
+    const referenceDate = rowsResult.rows[0].reference_date;
+    const rows = rowsResult.rows.filter(
+      (r) => r.reference_date.getTime() === referenceDate.getTime()
+    );
+
+    // Pega a linha de nível mais alto (código de conta mais curto) que
+    // bate com o rótulo procurado — é o jeito mais confiável de achar
+    // "o total" sem depender de um código de conta específico, que
+    // varia entre banco, seguradora e empresa comum.
+    function findTopLine(statementType, pattern) {
+      const candidates = rows.filter(
+        (r) =>
+          r.statement_type === statementType &&
+          pattern.test(r.account_description || "")
+      );
+      if (candidates.length === 0) return null;
+      candidates.sort((a, b) => a.account_code.length - b.account_code.length);
+      return Number(candidates[0].value);
+    }
+
+    const revenue = findTopLine("DRE", /receita/i);
+    const netIncome = findTopLine("DRE", /lucro.*l[ií]quido|resultado.*l[ií]quido/i);
+    const totalAssets = findTopLine("BPA", /ativo total/i);
+    const equity = findTopLine("BPP", /patrim[oô]nio l[ií]quido/i);
+
+    res.json({
+      available: true,
+      referenceDate,
+      revenue,
+      netIncome,
+      totalAssets,
+      equity,
+    });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/companies/:cnpj/buyback-events", cacheMiddleware, async (req, res) => {
   try {
     const companyResult = await pool.query(
