@@ -430,7 +430,7 @@ function computeExplainableScore({ recentTx, historicalMonthly, windowDays, free
       percentOfFloat != null
         ? `${percentOfFloat.toFixed(2)}% do free float`
         : `R$ ${recentValue.toLocaleString("pt-BR")}`;
-    explanation = `Score ${score}/100 (${relevance.toLowerCase()}) porque ${distinctRoles} categoria(s) de cargo movimentaram ${valuePart} em ${windowDays} dias${historyPart}. Isso não é recomendação de investimento.`;
+    explanation = `Score ${score}/100 (${relevance.toLowerCase()}) porque ${distinctRoles} categoria(s) de cargo movimentaram ${valuePart} em ${windowDays} dias${historyPart} (não inclui o acionista controlador). Isso não é recomendação de investimento.`;
   }
 
   return {
@@ -475,24 +475,31 @@ async function getFreeFloatShares(companyIds) {
 // Calcula o score de COMPRA (janela fixa de 21 dias, pra bater com o
 // resto do app) pra um lote de empresas de uma vez — evita N+1 query
 // quando o feed tem dezenas de empresas diferentes na mesma página.
-async function getCompanyBuyScores(companyIds) {
-  const scores = new Map();
+// Calcula os scores de COMPRA e VENDA (janela de 21 dias) pra um lote
+// de empresas de uma vez. Exclui o "Controlador ou Vinculado" — mesmo
+// motivo do sinal de Atenção: um bloco bilionário do controlador é um
+// evento diferente de um executivo negociando a própria posição, e
+// misturar os dois distorce a comparação com o histórico da empresa.
+async function getCompanyScores(companyIds) {
+  const scores = new Map(); // company_id -> { buy: result, sell: result }
   if (companyIds.length === 0) return scores;
 
   const recentResult = await pool.query(
     `
-    SELECT company_id, role_category, total_value, quantity, transaction_date
+    SELECT company_id, operation_type, role_category, total_value, quantity, transaction_date
     FROM transactions
-    WHERE operation_type = 'buy'
+    WHERE operation_type IN ('buy', 'sell')
       AND company_id = ANY($1::int[])
       AND transaction_date >= (CURRENT_DATE - 21)
+      AND role_category != 'Controlador ou Vinculado'
     `,
     [companyIds]
   );
-  const txByCompany = new Map();
+  const txByCompanyType = new Map(); // "companyId-type" -> [...]
   for (const r of recentResult.rows) {
-    if (!txByCompany.has(r.company_id)) txByCompany.set(r.company_id, []);
-    txByCompany.get(r.company_id).push({
+    const key = `${r.company_id}-${r.operation_type}`;
+    if (!txByCompanyType.has(key)) txByCompanyType.set(key, []);
+    txByCompanyType.get(key).push({
       roleCategory: r.role_category,
       value: Number(r.total_value) || 0,
       quantity: Number(r.quantity) || 0,
@@ -502,31 +509,37 @@ async function getCompanyBuyScores(companyIds) {
 
   const historicalResult = await pool.query(
     `
-    SELECT company_id, DATE_TRUNC('month', transaction_date) AS month, SUM(total_value) AS month_value
+    SELECT company_id, operation_type, DATE_TRUNC('month', transaction_date) AS month,
+           SUM(total_value) AS month_value
     FROM transactions
-    WHERE operation_type = 'buy' AND company_id = ANY($1::int[])
-    GROUP BY company_id, DATE_TRUNC('month', transaction_date)
+    WHERE operation_type IN ('buy', 'sell')
+      AND company_id = ANY($1::int[])
+      AND role_category != 'Controlador ou Vinculado'
+    GROUP BY company_id, operation_type, DATE_TRUNC('month', transaction_date)
     `,
     [companyIds]
   );
-  const histByCompany = new Map();
+  const histByCompanyType = new Map();
   for (const r of historicalResult.rows) {
-    if (!histByCompany.has(r.company_id)) histByCompany.set(r.company_id, []);
-    histByCompany.get(r.company_id).push(Number(r.month_value) || 0);
+    const key = `${r.company_id}-${r.operation_type}`;
+    if (!histByCompanyType.has(key)) histByCompanyType.set(key, []);
+    histByCompanyType.get(key).push(Number(r.month_value) || 0);
   }
 
   const freeFloatByCompany = await getFreeFloatShares(companyIds);
 
   for (const id of companyIds) {
-    const recentTx = txByCompany.get(id) || [];
-    const historicalMonthly = histByCompany.get(id) || [];
-    const result = computeExplainableScore({
-      recentTx,
-      historicalMonthly,
-      windowDays: 21,
-      freeFloatShares: freeFloatByCompany.get(id) || null,
-    });
-    scores.set(id, result);
+    const entry = {};
+    for (const opType of ["buy", "sell"]) {
+      const key = `${id}-${opType}`;
+      entry[opType] = computeExplainableScore({
+        recentTx: txByCompanyType.get(key) || [],
+        historicalMonthly: histByCompanyType.get(key) || [],
+        windowDays: 21,
+        freeFloatShares: freeFloatByCompany.get(id) || null,
+      });
+    }
+    scores.set(id, entry);
   }
   return scores;
 }
@@ -971,10 +984,10 @@ app.get("/api/feed", async (req, res) => {
     const companyIds = [
       ...new Set([...txRows.map((r) => r.company_id), ...eventRows.map((r) => r.company_id)]),
     ];
-    const scores = await getCompanyBuyScores(companyIds);
+    const scores = await getCompanyScores(companyIds);
 
     const txItems = txRows.map((r) => {
-      const s = scores.get(r.company_id);
+      const s = scores.get(r.company_id)?.[r.operation_type];
       return {
         id: `tx-${r.id}`,
         type: r.operation_type, // "buy" | "sell"
@@ -993,7 +1006,11 @@ app.get("/api/feed", async (req, res) => {
     });
 
     const eventItems = eventRows.map((r) => {
-      const s = scores.get(r.company_id);
+      // Fato relevante não tem "direção" — mostra o maior dos dois scores
+      // (compra ou venda), o que estiver mais fora do padrão no momento.
+      const pair = scores.get(r.company_id);
+      const s =
+        pair && (pair.buy?.score ?? -1) >= (pair.sell?.score ?? -1) ? pair.buy : pair?.sell;
       return {
         id: `ev-${r.id}`,
         type: "evento",
@@ -1935,6 +1952,7 @@ app.get("/api/companies/:cnpj/score", async (req, res) => {
         WHERE company_id = $1
           AND operation_type = $2
           AND transaction_date >= (CURRENT_DATE - $3::int)
+          AND role_category != 'Controlador ou Vinculado'
         `,
         [company.id, operationType, windowDays]
       );
@@ -1950,6 +1968,7 @@ app.get("/api/companies/:cnpj/score", async (req, res) => {
         SELECT SUM(total_value) AS month_value
         FROM transactions
         WHERE operation_type = $1 AND company_id = $2
+          AND role_category != 'Controlador ou Vinculado'
         GROUP BY DATE_TRUNC('month', transaction_date)
         `,
         [operationType, company.id]
