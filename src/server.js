@@ -1559,7 +1559,30 @@ app.get("/api/companies/:cnpj/buyback-events", cacheMiddleware, async (req, res)
         documentUrl: r.document_url,
       }));
 
-    res.json({ events: buybackEvents });
+    // Programas oficiais aprovados (dado estruturado da CVM, não é
+    // adivinhação por palavra-chave como os eventos acima).
+    const programsResult = await pool.query(
+      `
+      SELECT cvm_program_id, deliberation_date, deadline_date, status,
+             operation_type, reason, qty_ordinary, qty_preferred
+      FROM buyback_programs
+      WHERE company_id = $1
+      ORDER BY deliberation_date DESC NULLS LAST
+      `,
+      [companyId]
+    );
+    const programs = programsResult.rows.map((r) => ({
+      cvmProgramId: r.cvm_program_id,
+      deliberationDate: r.deliberation_date,
+      deadlineDate: r.deadline_date,
+      status: r.status,
+      operationType: r.operation_type,
+      reason: r.reason,
+      qtyOrdinary: r.qty_ordinary != null ? Number(r.qty_ordinary) : null,
+      qtyPreferred: r.qty_preferred != null ? Number(r.qty_preferred) : null,
+    }));
+
+    res.json({ events: buybackEvents, programs });
   } catch (err) {
     res.status(500).json({ status: "erro", message: err.message });
   }
