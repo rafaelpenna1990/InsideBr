@@ -1053,18 +1053,16 @@ app.get("/api/feed", async (req, res) => {
     const total = items.length;
     const page = items.slice(offset, offset + limit);
 
-    const lastUpdateResult = await pool.query(
-      `SELECT GREATEST(
-         (SELECT MAX(created_at) FROM transactions),
-         (SELECT MAX(created_at) FROM corporate_events)
-       ) AS last_update`
+    const lastCheckedResult = await pool.query(
+      `SELECT last_checked_at, last_success FROM ingest_status WHERE id = 1`
     );
+    const lastChecked = lastCheckedResult.rows[0]?.last_checked_at || null;
 
     const payload = {
       items: page,
       total,
       hasMore: offset + limit < total,
-      lastUpdate: lastUpdateResult.rows[0].last_update,
+      lastUpdate: lastChecked,
     };
     feedCache.set(cacheKey, { data: payload, fetchedAt: Date.now() });
     res.json(payload);
@@ -1180,6 +1178,7 @@ app.post("/api/internal/ingest-all", async (req, res) => {
   (async () => {
     const year = new Date().getFullYear();
     const ingestStartedAt = new Date();
+    let success = true;
     try {
       console.log(`[auto-ingest] Iniciando atualização automática (${ingestStartedAt.toISOString()})`);
 
@@ -1207,7 +1206,24 @@ app.post("/api/internal/ingest-all", async (req, res) => {
 
       console.log(`[auto-ingest] Atualização automática concluída com sucesso (${new Date().toISOString()})`);
     } catch (err) {
+      success = false;
       console.error("[auto-ingest] Erro durante a atualização automática:", err.message);
+    }
+
+    // Registra que o app CONFERIU agora, mesmo que não tenha achado
+    // nada novo (dedup por hash) — isso é diferente de "quando o dado
+    // mudou de verdade", e é o que mostramos como "atualizado há Xh".
+    try {
+      await pool.query(
+        `
+        INSERT INTO ingest_status (id, last_checked_at, last_success)
+        VALUES (1, NOW(), $1)
+        ON CONFLICT (id) DO UPDATE SET last_checked_at = NOW(), last_success = $1
+        `,
+        [success]
+      );
+    } catch (statusErr) {
+      console.error("[auto-ingest] Falha ao registrar status da verificação:", statusErr.message);
     }
   })();
 });
