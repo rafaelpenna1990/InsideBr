@@ -12,7 +12,7 @@
     "inspect-ipe": "node src/ingest/inspectIPE.js",
     "inspect-fre": "node src/ingest/inspectFRE.js",
     "inspect-cotahist": "node src/ingest/inspectCotahist.js",
-    "inspect-recompra": "node src/ingest/inspectRecompra.js",
+    "ingest-recompra-cvm": "node src/ingest/fetchRecompraCVM.js",
     "ingest-cotahist": "node src/ingest/fetchCotahist.js",
     "ingest-events": "node src/ingest/fetchEvents.js",
     "ingest-fre": "node src/ingest/fetchFRE.js",
