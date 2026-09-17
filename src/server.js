@@ -902,6 +902,9 @@ async function sendWatchlistNotifications(since) {
   }
 }
 
+const feedCache = new Map();
+const FEED_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutos — bate com o polling do app
+
 app.get("/api/feed", async (req, res) => {
   try {
     // Filtro por data específica: "from" e/ou "to" (formato YYYY-MM-DD).
@@ -913,6 +916,15 @@ app.get("/api/feed", async (req, res) => {
     const sort = req.query.sort || "recent"; // recent | score | value | insiders | impact
     const limit = Math.min(Number(req.query.limit) || 30, 100);
     const offset = Number(req.query.offset) || 0;
+
+    // O dado só muda de verdade uma vez por semana (ingestão automática)
+    // — cachear por alguns minutos evita recalcular tudo (incluindo os
+    // scores de compra e venda de cada empresa) a cada rolagem/refresh.
+    const cacheKey = `${from}|${to}|${type}|${sort}|${limit}|${offset}`;
+    const cached = feedCache.get(cacheKey);
+    if (cached && Date.now() - cached.fetchedAt < FEED_CACHE_TTL_MS) {
+      return res.json(cached.data);
+    }
 
     const includeTx = type !== "evento";
     const includeEvents = type === "all" || type === "evento";
@@ -1048,12 +1060,14 @@ app.get("/api/feed", async (req, res) => {
        ) AS last_update`
     );
 
-    res.json({
+    const payload = {
       items: page,
       total,
       hasMore: offset + limit < total,
       lastUpdate: lastUpdateResult.rows[0].last_update,
-    });
+    };
+    feedCache.set(cacheKey, { data: payload, fetchedAt: Date.now() });
+    res.json(payload);
   } catch (err) {
     res.status(500).json({ status: "erro", message: err.message });
   }
