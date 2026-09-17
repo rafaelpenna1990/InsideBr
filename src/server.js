@@ -278,7 +278,21 @@ app.get("/api/market/summary", async (req, res) => {
     const tapeCandidates = quotes.filter((q) => ourTickers.has(q.ticker));
     const tickerTape = (tapeCandidates.length >= 8 ? tapeCandidates : quotes).slice(0, 12);
 
-    const sorted = [...quotes].sort((a, b) => b.changePercent - a.changePercent);
+    // Só entra em "maiores altas/baixas" quem negociou de verdade nos
+    // últimos 10 dias — a brapi às vezes lista ações mortas/sem
+    // liquidez com uma variação % absurda, calculada contra um preço
+    // antigo de anos atrás. Usamos nosso próprio COTAHIST (cobre toda
+    // a B3 agora) como prova de que a negociação é recente de verdade.
+    const activeResult = await pool.query(
+      `
+      SELECT DISTINCT ticker FROM price_history
+      WHERE trade_date >= (CURRENT_DATE - INTERVAL '10 days')
+      `
+    );
+    const activeTickers = new Set(activeResult.rows.map((r) => r.ticker));
+    const liquidQuotes = quotes.filter((q) => activeTickers.has(q.ticker));
+
+    const sorted = [...liquidQuotes].sort((a, b) => b.changePercent - a.changePercent);
     const topGainers = sorted.slice(0, 5);
     const topLosers = sorted.slice(-5).reverse();
 
