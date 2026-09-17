@@ -14,6 +14,7 @@
     "inspect-cotahist": "node src/ingest/inspectCotahist.js",
     "ingest-recompra-cvm": "node src/ingest/fetchRecompraCVM.js",
     "inspect-sancionador": "node src/ingest/inspectSancionador.js",
+    "ingest-sancionador": "node src/ingest/fetchSancionador.js",
     "ingest-cotahist": "node src/ingest/fetchCotahist.js",
     "ingest-events": "node src/ingest/fetchEvents.js",
     "ingest-fre": "node src/ingest/fetchFRE.js",
