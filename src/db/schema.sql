@@ -52,6 +52,26 @@ CREATE TABLE IF NOT EXISTS buybacks (
 CREATE INDEX IF NOT EXISTS idx_buybacks_company ON buybacks(company_id);
 CREATE INDEX IF NOT EXISTS idx_buybacks_date ON buybacks(transaction_date);
 
+-- Programas de recompra APROVADOS (autorização do conselho, com prazo e
+-- quantidade máxima) — diferente da tabela "buybacks" acima, que registra
+-- as compras de fato feitas dentro de um programa.
+CREATE TABLE IF NOT EXISTS buyback_programs (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER REFERENCES companies(id),
+  cvm_program_id INTEGER UNIQUE,
+  deliberation_date DATE,
+  deadline_date DATE,
+  status VARCHAR(30),
+  operation_type VARCHAR(50),
+  reason TEXT,
+  purpose TEXT,
+  qty_ordinary NUMERIC,
+  qty_preferred NUMERIC,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_buyback_programs_company ON buyback_programs(company_id);
+
 CREATE TABLE IF NOT EXISTS corporate_events (
   id SERIAL PRIMARY KEY,
   company_id INTEGER REFERENCES companies(id),
