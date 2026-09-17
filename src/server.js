@@ -679,6 +679,26 @@ app.get("/api/debug/tickers-with-trailing-f", async (req, res) => {
   }
 });
 
+// TEMPORÁRIO — lista empresas com programa de recompra em andamento,
+// pra facilitar testar no app.
+app.get("/api/debug/buyback-vigente", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT c.name, c.ticker, bp.status, bp.deliberation_date, bp.deadline_date
+      FROM buyback_programs bp
+      JOIN companies c ON c.id = bp.company_id
+      WHERE bp.status ILIKE '%vigente%' OR bp.status ILIKE '%andamento%'
+      ORDER BY bp.deliberation_date DESC
+      LIMIT 15
+      `
+    );
+    res.json({ count: result.rows.length, companies: result.rows });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/debug/ticker-counts", async (req, res) => {
   try {
     const totalResult = await pool.query(
