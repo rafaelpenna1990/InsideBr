@@ -76,16 +76,10 @@ async function main() {
     return;
   }
 
-  console.log(`\n✅ Sucesso com: ${usedUrl}`);
-
-  if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
-  const zipPath = path.join(TMP_DIR, `cotahist_${year}.zip`);
-  fs.writeFileSync(zipPath, buffer);
-
   const zip = new AdmZip(zipPath);
   const entries = zip.getEntries();
   console.log(`\nArquivos dentro do zip:`);
-  entries.forEach((e) => console.log(`  - ${e.entryName} (${e.header.size} bytes)`));
+  entries.forEach((e) => console.log(`  - ${e.entryName} (${(e.header.size / 1024 / 1024).toFixed(1)} MB)`));
 
   const txtEntry = entries.find((e) => e.entryName.toUpperCase().includes("COTAHIST"));
   if (!txtEntry) {
@@ -93,25 +87,53 @@ async function main() {
     return;
   }
 
-  const content = zip.readFile(txtEntry).toString("latin1");
-  const lines = content.split(/\r?\n/).filter(Boolean);
-  console.log(`\nTotal de linhas: ${lines.length}`);
+  // O arquivo descompactado tem centenas de MB (tem TODOS os ativos da
+  // B3: ações, opções, termo, ETFs, FIIs...) — nunca carrega ele inteiro
+  // como string de uma vez (`.toString()` + `.split("\n")` trava/estoura
+  // memória). Em vez disso, lê direto do Buffer, linha por linha, sem
+  // nunca materializar o arquivo inteiro como array de strings.
+  const rawBuffer = zip.readFile(txtEntry);
+  console.log(`\nTamanho do arquivo descomprimido: ${(rawBuffer.length / 1024 / 1024).toFixed(1)} MB`);
 
-  console.log(`\n--- Linha 1 (deveria ser o HEADER, tipo 00) ---`);
-  console.log(lines[0]);
-  console.log(`Tamanho da linha: ${lines[0].length} caracteres`);
+  // Cada linha tem 245 caracteres + quebra de linha. Acha o primeiro \n
+  // pra saber se é CRLF (247 bytes) ou só LF (246 bytes) por linha.
+  const firstNewline = rawBuffer.indexOf(0x0a); // \n
+  const lineLength = firstNewline + 1; // inclui a quebra de linha
+  console.log(`Tamanho de cada linha (com quebra): ${lineLength} bytes`);
+
+  function readLine(index) {
+    const start = index * lineLength;
+    return rawBuffer.toString("latin1", start, start + 245);
+  }
+
+  const totalLines = Math.floor(rawBuffer.length / lineLength);
+  console.log(`Total de linhas (estimado): ${totalLines.toLocaleString("pt-BR")}`);
+
+  console.log(`\n--- Linha 1 (HEADER, tipo 00) ---`);
+  console.log(readLine(0));
 
   console.log(`\n--- Linha 2 (primeira cotação, tipo 01) ---`);
-  console.log(lines[1]);
+  const l = readLine(1);
+  console.log(l);
 
-  console.log(`\n--- Última linha (deveria ser o TRAILER, tipo 99) ---`);
-  console.log(lines[lines.length - 1]);
+  console.log(`\n--- Última linha (TRAILER, tipo 99) ---`);
+  console.log(readLine(totalLines - 1));
+
+  // Conta quantas linhas são do "lote padrão" (BDI=02) — o que
+  // realmente nos interessa, o resto é opção/termo/outros mercados que
+  // vamos descartar na ingestão de verdade.
+  let countBdi02 = 0;
+  const sampleStep = Math.max(1, Math.floor(totalLines / 200000)); // amostra, não conta tudo
+  let sampled = 0;
+  for (let i = 1; i < totalLines - 1; i += sampleStep) {
+    const bdi = rawBuffer.toString("latin1", i * lineLength + 10, i * lineLength + 12);
+    if (bdi === "02") countBdi02++;
+    sampled++;
+  }
+  console.log(`\nAmostra: ${sampled.toLocaleString("pt-BR")} linhas verificadas, ${countBdi02.toLocaleString("pt-BR")} são BDI=02 (lote padrão) — ${((countBdi02 / sampled) * 100).toFixed(1)}%`);
 
   // Recorte de campos conhecidos da linha 2, pra conferir se as
   // posições batem com o layout oficial da B3:
-  // TIPREG(1-2) DATA(3-10) CODBDI(11-12) CODNEG(13-24) NOMRES(28-39)
-  // PREABE(57-69) PREMAX(70-82) PREMIN(83-95) PREULT(109-121) VOLTOT(171-188)
-  const l = lines[1];
   console.log(`\n--- Campos recortados da linha 2 (conferir se fazem sentido) ---`);
   console.log(`TIPREG (1-2):   "${l.slice(0, 2)}"`);
   console.log(`DATA (3-10):    "${l.slice(2, 10)}"`);
@@ -123,6 +145,20 @@ async function main() {
   console.log(`PREMIN (83-95): "${l.slice(82, 95)}"`);
   console.log(`PREULT (109-121): "${l.slice(108, 121)}"`);
   console.log(`VOLTOT (171-188): "${l.slice(170, 188)}"`);
+
+  // Acha uma linha de exemplo de uma ação conhecida (PETR4) pra
+  // conferir o recorte numa linha real de ação, não a primeira do
+  // arquivo (que pode ser qualquer papel em ordem alfabética).
+  console.log(`\n--- Procurando uma linha de PETR4 pra conferir... ---`);
+  for (let i = 1; i < totalLines - 1; i++) {
+    const codneg = rawBuffer.toString("latin1", i * lineLength + 12, i * lineLength + 24).trim();
+    if (codneg === "PETR4") {
+      const pl = readLine(i);
+      console.log(pl);
+      console.log(`DATA: "${pl.slice(2, 10)}" | PREABE: "${pl.slice(56, 69)}" | PREULT: "${pl.slice(108, 121)}" | VOLTOT: "${pl.slice(170, 188)}"`);
+      break;
+    }
+  }
 
   console.log(`\n${"=".repeat(60)}`);
   console.log("PRÓXIMO PASSO: me manda essa saída inteira, vou usar pra");
