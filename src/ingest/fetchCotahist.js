@@ -51,12 +51,7 @@ function parseDate(raw) {
 
 async function ingestYear(year) {
   console.log(`\n=== COTAHIST ${year} ===`);
-
-  const tickersResult = await pool.query(
-    "SELECT DISTINCT ticker FROM companies WHERE ticker IS NOT NULL"
-  );
-  const trackedTickers = new Set(tickersResult.rows.map((r) => r.ticker));
-  console.log(`Rastreando ${trackedTickers.size} tickers mapeados.`);
+  console.log("Ingerindo TODAS as ações da B3 (lote padrão), não só as rastreadas pra insider trading.");
 
   const zipBuffer = await downloadZipBuffer(year);
   console.log(`Baixado: ${(zipBuffer.length / 1024 / 1024).toFixed(1)} MB comprimido`);
@@ -106,7 +101,7 @@ async function ingestYear(year) {
     if (line.slice(10, 12) !== "02") continue; // só lote padrão (BDI=02)
 
     const ticker = line.slice(12, 24).trim();
-    if (!trackedTickers.has(ticker)) continue;
+    if (!ticker) continue;
 
     matchedCount++;
     batch.push({
@@ -126,7 +121,7 @@ async function ingestYear(year) {
   await flushBatch();
 
   console.log(`Linhas processadas: ${lineCount.toLocaleString("pt-BR")}`);
-  console.log(`Linhas que batiam com nossos tickers: ${matchedCount.toLocaleString("pt-BR")}`);
+  console.log(`Cotações de lote padrão encontradas: ${matchedCount.toLocaleString("pt-BR")}`);
   console.log(`Registros gravados/atualizados: ${inserted.toLocaleString("pt-BR")}`);
 }
 
