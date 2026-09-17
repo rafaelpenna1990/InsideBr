@@ -1549,6 +1549,93 @@ function formatCompactBRLServer(value) {
 // comparação com o padrão histórico DA PRÓPRIA empresa, excluindo
 // o acionista controlador (mesmo motivo do painel individual).
 // ─────────────────────────────────────────────────────────────
+app.get("/api/companies/:cnpj/sanctioning-processes", cacheMiddleware, async (req, res) => {
+  try {
+    const companyResult = await pool.query("SELECT id FROM companies WHERE cnpj = $1", [
+      req.params.cnpj,
+    ]);
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    const companyId = companyResult.rows[0].id;
+
+    const result = await pool.query(
+      `
+      SELECT sp.nup, sp.subject, sp.summary, sp.opened_date, sp.current_phase,
+             sp.current_subphase, sp.last_movement_date, spa.accused_name
+      FROM sanctioning_process_accused spa
+      JOIN sanctioning_processes sp ON sp.nup = spa.nup
+      WHERE spa.company_id = $1
+      ORDER BY sp.opened_date DESC NULLS LAST
+      `,
+      [companyId]
+    );
+
+    const processes = result.rows.map((r) => ({
+      nup: r.nup,
+      subject: r.subject,
+      summary: r.summary,
+      openedDate: r.opened_date,
+      currentPhase: r.current_phase,
+      currentSubphase: r.current_subphase,
+      lastMovementDate: r.last_movement_date,
+      accusedName: r.accused_name,
+    }));
+
+    res.json({ processes });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
+app.get("/api/companies/:cnpj/insider-positions", cacheMiddleware, async (req, res) => {
+  try {
+    const companyResult = await pool.query("SELECT id FROM companies WHERE cnpj = $1", [
+      req.params.cnpj,
+    ]);
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ status: "não encontrado" });
+    }
+    const companyId = companyResult.rows[0].id;
+
+    // Pega só a data de referência mais recente disponível pra essa
+    // empresa — é a posição "de agora" (a mais nova que a CVM tem).
+    const latestResult = await pool.query(
+      "SELECT MAX(reference_date) AS latest FROM insider_positions WHERE company_id = $1",
+      [companyId]
+    );
+    const latestDate = latestResult.rows[0].latest;
+    if (!latestDate) {
+      return res.json({ referenceDate: null, positions: [] });
+    }
+
+    const positionsResult = await pool.query(
+      `
+      SELECT holder_name, role_category, asset_class, SUM(quantity) AS quantity
+      FROM insider_positions
+      WHERE company_id = $1 AND reference_date = $2
+        AND role_category != 'Controlador ou Vinculado'
+      GROUP BY holder_name, role_category, asset_class
+      ORDER BY quantity DESC NULLS LAST
+      LIMIT 20
+      `,
+      [companyId, latestDate]
+    );
+
+    res.json({
+      referenceDate: latestDate,
+      positions: positionsResult.rows.map((r) => ({
+        holderName: r.holder_name,
+        roleCategory: r.role_category,
+        assetClass: r.asset_class,
+        quantity: Number(r.quantity) || 0,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/companies/:cnpj/buyback-events", cacheMiddleware, async (req, res) => {
   try {
     const companyResult = await pool.query(
