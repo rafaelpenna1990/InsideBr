@@ -1,45 +1,51 @@
-{
-  "name": "insidebr-backend",
-  "version": "1.0.0",
-  "description": "Backend do InsideBR — agregador de negociações de insiders (CVM VLMO)",
-  "main": "src/server.js",
-  "type": "commonjs",
-  "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
-    "inspect-cvm": "node src/ingest/inspectVlmo.js",
-    "inspect-recompra": "node src/ingest/inspectRecompra.js",
-    "inspect-ipe": "node src/ingest/inspectIPE.js",
-    "inspect-fre": "node src/ingest/inspectFRE.js",
-    "inspect-cotahist": "node src/ingest/inspectCotahist.js",
-    "ingest-recompra-cvm": "node src/ingest/fetchRecompraCVM.js",
-    "inspect-sancionador": "node src/ingest/inspectSancionador.js",
-    "ingest-sancionador": "node src/ingest/fetchSancionador.js",
-    "inspect-vlmo-full": "node src/ingest/inspectVlmoFull.js",
-    "inspect-vlmo-saldos": "node src/ingest/inspectVlmoSaldos.js",
-    "ingest-positions": "node src/ingest/fetchVlmoPositions.js",
-    "inspect-dfp": "node src/ingest/inspectDFP.js",
-    "ingest-cotahist": "node src/ingest/fetchCotahist.js",
-    "ingest-events": "node src/ingest/fetchEvents.js",
-    "ingest-fre": "node src/ingest/fetchFRE.js",
-    "ingest": "node src/ingest/fetchVlmo.js",
-    "map-tickers": "node src/ingest/mapTickers.js",
-    "fix-tickers": "node src/db/fixTickers.js",
-    "fix-tickers-cnpj": "node src/db/cnpjTickerFix.js",
-    "revert-ticker-overwrites": "node src/db/revertBadOverwrites.js",
-    "fix-trailing-f": "node src/db/fixTrailingF.js",
-    "migrate": "node src/db/migrate.js"
-  },
-  "dependencies": {
-    "express": "^4.19.2",
-    "pg": "^8.12.0",
-    "dotenv": "^16.4.5",
-    "adm-zip": "^0.5.14",
-    "unzipper": "^0.12.3",
-    "csv-parse": "^5.5.6",
-    "fast-xml-parser": "^4.5.0"
-  },
-  "engines": {
-    "node": ">=18"
+/**
+ * Inspeção do conjunto DFP (Demonstrações Financeiras Padronizadas) —
+ * bem maior que tudo que já processamos, então primeiro só lista o
+ * que tem dentro do zip antes de decidir o que vale a pena ingerir.
+ *
+ * Roda com: npm run inspect-dfp [ano]
+ */
+require("dotenv").config();
+const AdmZip = require("adm-zip");
+
+const YEAR = process.argv[2] || "2025";
+const DATA_URL = `https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/DFP/DADOS/dfp_cia_aberta_${YEAR}.zip`;
+
+async function main() {
+  console.log(`Baixando: ${DATA_URL}`);
+  const response = await fetch(DATA_URL, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; InsideBR/1.0)" },
+  });
+  console.log(`Status: ${response.status}`);
+  if (!response.ok) throw new Error(`Falha (${response.status})`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  console.log(`Baixado: ${(buffer.length / 1024 / 1024).toFixed(1)} MB`);
+
+  const zip = new AdmZip(buffer);
+  const entries = zip.getEntries();
+  console.log(`\nO zip contém ${entries.length} arquivo(s):`);
+  entries.forEach((e) =>
+    console.log(`  - ${e.entryName} (${(e.header.size / 1024).toFixed(1)} KB)`)
+  );
+
+  // Mostra o cabeçalho + 1 linha de exemplo de cada CSV, só pra
+  // entender a forma de cada um sem processar tudo ainda.
+  for (const entry of entries.filter((e) => e.entryName.endsWith(".csv"))) {
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`${entry.entryName}`);
+    console.log("=".repeat(60));
+    const content = zip.readFile(entry).toString("latin1");
+    const lines = content.split(/\r?\n/).filter((l) => l.trim());
+    const header = lines[0].split(";");
+    console.log(`Colunas: ${JSON.stringify(header)}`);
+    console.log(`Total de linhas: ${lines.length}`);
+    if (lines[1]) {
+      const cols = lines[1].split(";");
+      const row = {};
+      header.forEach((h, i) => (row[h.trim()] = cols[i]));
+      console.log("Exemplo:", JSON.stringify(row));
+    }
   }
 }
+
+main().catch((err) => console.error("Erro:", err.message));
