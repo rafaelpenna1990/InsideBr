@@ -625,6 +625,24 @@ app.get("/api/debug/company/:cnpj", async (req, res) => {
 
 // TEMPORÁRIO — acha tickers usados por mais de uma empresa (sinal de
 // mapeamento errado) e confirma os totais.
+// TEMPORÁRIO — acha tickers com "F" sobrando no final (resquício do
+// mapeamento automático antigo) que não batem com o código real da B3.
+app.get("/api/debug/tickers-with-trailing-f", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT id, name, ticker
+      FROM companies
+      WHERE ticker ~ '^[A-Z]{4}[0-9]{1,2}F$'
+      ORDER BY ticker
+      `
+    );
+    res.json({ count: result.rows.length, companies: result.rows });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/debug/ticker-counts", async (req, res) => {
   try {
     const totalResult = await pool.query(
