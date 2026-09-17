@@ -282,7 +282,43 @@ app.get("/api/market/summary", async (req, res) => {
     const topGainers = sorted.slice(0, 5);
     const topLosers = sorted.slice(-5).reverse();
 
-    res.json({ tickerTape, topGainers, topLosers, updatedAt: new Date(marketCache.fetchedAt) });
+    // Mini-histórico (sparkline) dos últimos 15 pregões — do NOSSO
+    // banco (não custa nada, já temos o dado), pra desenhar o
+    // gráfico pequenininho ao lado de cada linha, tipo o app Stocks
+    // da Apple.
+    const displayed = [...new Set([...tickerTape, ...topGainers, ...topLosers].map((q) => q.ticker))];
+    let sparklines = {};
+    if (displayed.length > 0) {
+      const sparkResult = await pool.query(
+        `
+        SELECT ticker, close, trade_date,
+               ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY trade_date DESC) AS rn
+        FROM price_history
+        WHERE ticker = ANY($1::text[])
+        `,
+        [displayed]
+      );
+      const grouped = new Map();
+      for (const r of sparkResult.rows) {
+        if (r.rn > 15) continue;
+        if (!grouped.has(r.ticker)) grouped.set(r.ticker, []);
+        grouped.get(r.ticker).push(Number(r.close));
+      }
+      for (const [ticker, closes] of grouped) {
+        sparklines[ticker] = closes.reverse(); // volta pra ordem cronológica
+      }
+    }
+
+    function attachSparkline(list) {
+      return list.map((q) => ({ ...q, sparkline: sparklines[q.ticker] || null }));
+    }
+
+    res.json({
+      tickerTape: attachSparkline(tickerTape),
+      topGainers: attachSparkline(topGainers),
+      topLosers: attachSparkline(topLosers),
+      updatedAt: new Date(marketCache.fetchedAt),
+    });
   } catch (err) {
     res.status(500).json({ status: "erro", message: err.message });
   }
@@ -1686,16 +1722,16 @@ app.get("/api/companies/:cnpj/signals-panel", cacheMiddleware, async (req, res) 
       let comparisonText = "";
       if (!hasHistory || multiplier == null) {
         status = netValue >= 0 ? "positivo" : "neutro"; // sem base de comparação, não classifica como atenção
-        comparisonText = " Histórico insuficiente pra comparar com o padrão da empresa.";
+        comparisonText = " Histórico insuficiente pra comparar.";
       } else if (netValue >= 0) {
         status = "positivo";
-        comparisonText = ` Isso é ${multiplier.toFixed(1)}× o padrão mensal histórico da empresa.`;
+        comparisonText = ` ${multiplier.toFixed(1)}× o padrão mensal da empresa.`;
       } else if (multiplier >= 2) {
         status = "atencao"; // venda bem acima do padrão normal dessa empresa específica
-        comparisonText = ` Isso é ${multiplier.toFixed(1)}× o padrão mensal histórico da empresa — bem acima do normal pra ela.`;
+        comparisonText = ` ${multiplier.toFixed(1)}× acima do padrão mensal da empresa.`;
       } else {
         status = "neutro"; // venda, mas dentro do padrão normal dessa empresa
-        comparisonText = ` Isso é ${multiplier.toFixed(1)}× o padrão mensal histórico da empresa — dentro do normal pra ela.`;
+        comparisonText = ` ${multiplier.toFixed(1)}× do padrão mensal, dentro do normal.`;
       }
 
       // Busca as maiores transações do período pra explicar o "porquê"
@@ -1721,7 +1757,7 @@ app.get("/api/companies/:cnpj/signals-panel", cacheMiddleware, async (req, res) 
             ? `Saldo acumulado (12 meses): compra líquida de ${formatCompactBRLServer(netValue)}${netQty !== 0 ? ` (${netQty.toLocaleString("pt-BR")} ações)` : ""}.`
             : `Saldo acumulado (12 meses): venda líquida de ${formatCompactBRLServer(Math.abs(netValue))}${netQty !== 0 ? ` (${Math.abs(netQty).toLocaleString("pt-BR")} ações)` : ""}.`) +
           comparisonText +
-          " Não inclui o acionista controlador (esse é outro sinal — vendas de bloco do controlador não representam a mesma coisa que negociação de diretor/conselho).",
+          " Não inclui o acionista controlador, que é medido à parte.",
         detail: {
           boughtValue: bought,
           soldValue: sold,
@@ -1833,16 +1869,16 @@ app.get("/api/companies/:cnpj/signals-panel", cacheMiddleware, async (req, res) 
 
         if (!hasHistory) {
           status = diff >= 0 ? "positivo" : "neutro";
-          comparisonText = " Histórico insuficiente pra comparar com o padrão da empresa.";
+          comparisonText = " Histórico insuficiente pra comparar.";
         } else if (diff < 0 && medianDiff > 0 && Math.abs(diff) >= medianDiff * 2) {
           status = "atencao"; // queda bem maior que a variação normal dessa empresa
-          comparisonText = ` Isso é ${(Math.abs(diff) / medianDiff).toFixed(1)}× a variação anual típica dessa empresa.`;
+          comparisonText = ` ${(Math.abs(diff) / medianDiff).toFixed(1)}× a variação anual típica.`;
         } else if (diff < 0 && medianDiff === 0 && Math.abs(diff) >= 1) {
           status = "atencao"; // empresa historicamente estável, qualquer queda chama atenção
-          comparisonText = " Essa empresa costuma ter free float estável — essa queda foge do padrão dela.";
+          comparisonText = " Foge do padrão de free float estável dessa empresa.";
         } else {
           status = diff >= 0 ? "positivo" : "neutro";
-          if (diff < 0) comparisonText = " Dentro da variação normal dessa empresa.";
+          if (diff < 0) comparisonText = " Dentro da variação normal.";
         }
       }
 
