@@ -122,6 +122,20 @@ CREATE TABLE IF NOT EXISTS ingest_status (
   CONSTRAINT single_row CHECK (id = 1)
 );
 
+CREATE TABLE IF NOT EXISTS price_history (
+  id SERIAL PRIMARY KEY,
+  ticker VARCHAR(20) NOT NULL,
+  trade_date DATE NOT NULL,
+  open NUMERIC,
+  high NUMERIC,
+  low NUMERIC,
+  close NUMERIC,
+  volume BIGINT,
+  UNIQUE(ticker, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_history_ticker_date ON price_history(ticker, trade_date);
+
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
