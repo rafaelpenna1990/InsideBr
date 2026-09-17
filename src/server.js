@@ -1139,7 +1139,30 @@ app.get("/api/events/recent", async (req, res) => {
   }
 });
 
-app.get("/api/companies/:cnpj/events", async (req, res) => {
+// ─────────────────────────────────────────────────────────────
+// CACHE GENÉRICO — o dado da empresa (score, painel de sinais, gráficos)
+// não muda de verdade fora da ingestão semanal, mas a pessoa abre a
+// mesma empresa várias vezes numa sessão (voltar, navegar entre abas).
+// Isso evita recalcular tudo do zero toda vez.
+// ─────────────────────────────────────────────────────────────
+const genericCache = new Map();
+const GENERIC_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
+function cacheMiddleware(req, res, next) {
+  const key = req.originalUrl;
+  const cached = genericCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < GENERIC_CACHE_TTL_MS) {
+    return res.json(cached.data);
+  }
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    genericCache.set(key, { data: body, fetchedAt: Date.now() });
+    return originalJson(body);
+  };
+  next();
+}
+
+app.get("/api/companies/:cnpj/events", cacheMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
       `
@@ -1392,7 +1415,7 @@ function formatCompactBRLServer(value) {
 // comparação com o padrão histórico DA PRÓPRIA empresa, excluindo
 // o acionista controlador (mesmo motivo do painel individual).
 // ─────────────────────────────────────────────────────────────
-app.get("/api/companies/:cnpj/buyback-events", async (req, res) => {
+app.get("/api/companies/:cnpj/buyback-events", cacheMiddleware, async (req, res) => {
   try {
     const companyResult = await pool.query(
       "SELECT id FROM companies WHERE cnpj = $1",
@@ -1505,7 +1528,7 @@ app.get("/api/companies-with-attention", async (req, res) => {
   }
 });
 
-app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
+app.get("/api/companies/:cnpj/signals-panel", cacheMiddleware, async (req, res) => {
   try {
     const companyResult = await pool.query(
       "SELECT id FROM companies WHERE cnpj = $1",
@@ -1764,7 +1787,7 @@ app.get("/api/companies/:cnpj/signals-panel", async (req, res) => {
   }
 });
 
-app.get("/api/companies/:cnpj/capital-events-timeline", async (req, res) => {
+app.get("/api/companies/:cnpj/capital-events-timeline", cacheMiddleware, async (req, res) => {
   try {
     const companyResult = await pool.query(
       "SELECT id FROM companies WHERE cnpj = $1",
@@ -1817,7 +1840,7 @@ app.get("/api/companies/:cnpj/capital-events-timeline", async (req, res) => {
   }
 });
 
-app.get("/api/companies/:cnpj/capital-timeline", async (req, res) => {
+app.get("/api/companies/:cnpj/capital-timeline", cacheMiddleware, async (req, res) => {
   try {
     const companyResult = await pool.query(
       "SELECT id FROM companies WHERE cnpj = $1",
@@ -1909,7 +1932,7 @@ app.get("/api/companies/:cnpj/capital-timeline", async (req, res) => {
   }
 });
 
-app.get("/api/companies/:cnpj/net-position", async (req, res) => {
+app.get("/api/companies/:cnpj/net-position", cacheMiddleware, async (req, res) => {
   try {
     const companyResult = await pool.query(
       "SELECT id FROM companies WHERE cnpj = $1",
@@ -1958,7 +1981,7 @@ app.get("/api/companies/:cnpj/net-position", async (req, res) => {
   }
 });
 
-app.get("/api/companies/:cnpj/score", async (req, res) => {
+app.get("/api/companies/:cnpj/score", cacheMiddleware, async (req, res) => {
   try {
     const windowDays = Number(req.query.days) || 21;
 
@@ -2056,7 +2079,7 @@ app.get("/api/stats", async (req, res) => {
   }
 });
 
-app.get("/api/companies/:cnpj/transactions", async (req, res) => {
+app.get("/api/companies/:cnpj/transactions", cacheMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
       `
