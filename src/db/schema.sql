@@ -100,6 +100,24 @@ CREATE TABLE IF NOT EXISTS sanctioning_process_accused (
 CREATE INDEX IF NOT EXISTS idx_sanctioning_accused_company ON sanctioning_process_accused(company_id);
 CREATE INDEX IF NOT EXISTS idx_sanctioning_accused_nup ON sanctioning_process_accused(nup);
 
+-- Posição TOTAL detida por cada insider (não é uma negociação, é
+-- "quanto ele tem hoje") — vem do mesmo arquivo VLMO que já usamos,
+-- só que da linha "Saldo Inicial" que antes a gente descartava.
+CREATE TABLE IF NOT EXISTS insider_positions (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER REFERENCES companies(id),
+  holder_name VARCHAR(255),
+  role_category VARCHAR(100),
+  asset_class VARCHAR(10),
+  quantity NUMERIC,
+  reference_date DATE,
+  raw_hash VARCHAR(64) UNIQUE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_insider_positions_company ON insider_positions(company_id);
+CREATE INDEX IF NOT EXISTS idx_insider_positions_holder ON insider_positions(holder_name);
+
 CREATE TABLE IF NOT EXISTS corporate_events (
   id SERIAL PRIMARY KEY,
   company_id INTEGER REFERENCES companies(id),
