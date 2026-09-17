@@ -1,0 +1,45 @@
+{
+  "name": "insidebr-backend",
+  "version": "1.0.0",
+  "description": "Backend do InsideBR — agregador de negociações de insiders (CVM VLMO)",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "inspect-cvm": "node src/ingest/inspectVlmo.js",
+    "inspect-recompra": "node src/ingest/inspectRecompra.js",
+    "inspect-ipe": "node src/ingest/inspectIPE.js",
+    "inspect-fre": "node src/ingest/inspectFRE.js",
+    "inspect-cotahist": "node src/ingest/inspectCotahist.js",
+    "ingest-recompra-cvm": "node src/ingest/fetchRecompraCVM.js",
+    "inspect-sancionador": "node src/ingest/inspectSancionador.js",
+    "ingest-sancionador": "node src/ingest/fetchSancionador.js",
+    "inspect-vlmo-full": "node src/ingest/inspectVlmoFull.js",
+    "inspect-vlmo-saldos": "node src/ingest/inspectVlmoSaldos.js",
+    "ingest-positions": "node src/ingest/fetchVlmoPositions.js",
+    "inspect-dfp": "node src/ingest/inspectDFP.js",
+    "ingest-cotahist": "node src/ingest/fetchCotahist.js",
+    "ingest-events": "node src/ingest/fetchEvents.js",
+    "ingest-fre": "node src/ingest/fetchFRE.js",
+    "ingest": "node src/ingest/fetchVlmo.js",
+    "map-tickers": "node src/ingest/mapTickers.js",
+    "fix-tickers": "node src/db/fixTickers.js",
+    "fix-tickers-cnpj": "node src/db/cnpjTickerFix.js",
+    "revert-ticker-overwrites": "node src/db/revertBadOverwrites.js",
+    "fix-trailing-f": "node src/db/fixTrailingF.js",
+    "migrate": "node src/db/migrate.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.12.0",
+    "dotenv": "^16.4.5",
+    "adm-zip": "^0.5.14",
+    "unzipper": "^0.12.3",
+    "csv-parse": "^5.5.6",
+    "fast-xml-parser": "^4.5.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
