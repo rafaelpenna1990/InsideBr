@@ -69,6 +69,22 @@ async function ingestYear(year) {
     const rows = parseCsv(zip.readFile(entry).toString("latin1"));
     console.log(`  ${entryName}: ${rows.length} linhas no arquivo`);
 
+    // Algumas empresas reapresentam o DFP (corrigem e reenviam) — fica
+    // mais de uma VERSAO pro mesmo período. Mantém só a mais recente
+    // por (empresa, conta), senão duas linhas colidem no mesmo hash.
+    const latestByKey = new Map();
+    for (const row of rows) {
+      if (row.ST_CONTA_FIXA !== "S") continue;
+      if (row.ORDEM_EXERC !== "ÚLTIMO") continue;
+      const key = `${row.CNPJ_CIA}|${row.DT_REFER}|${row.CD_CONTA}`;
+      const existing = latestByKey.get(key);
+      if (!existing || Number(row.VERSAO) > Number(existing.VERSAO)) {
+        latestByKey.set(key, row);
+      }
+    }
+    const dedupedRows = [...latestByKey.values()];
+    console.log(`    Após deduplicar por versão: ${dedupedRows.length}`);
+
     let batch = [];
     const BATCH_SIZE = 200;
     let inserted = 0;
@@ -105,10 +121,7 @@ async function ingestYear(year) {
       batch = [];
     }
 
-    for (const row of rows) {
-      if (row.ST_CONTA_FIXA !== "S") continue;
-      if (row.ORDEM_EXERC !== "ÚLTIMO") continue;
-
+    for (const row of dedupedRows) {
       const companyId = cnpjToId.get(row.CNPJ_CIA);
       if (!companyId) {
         totalNoCompany++;
