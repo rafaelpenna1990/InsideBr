@@ -1,28 +1,22 @@
 /**
  * PASSO 1 — Inspeção do COTAHIST (cotações históricas da B3)
  *
- * Formato diferente de tudo que já ingerimos até agora: é um arquivo
- * de LARGURA FIXA (fixed-width), não CSV com separador. Cada linha
- * tem exatamente 245 caracteres, com campos em posições fixas.
+ * O arquivo descompactado tem ~650MB (todos os ativos da B3 num ano
+ * só) — grande demais pra carregar inteiro na memória do plano
+ * gratuito do Render. Esse script processa em STREAMING: lê linha por
+ * linha direto do zip comprimido, sem nunca materializar o arquivo
+ * inteiro como string/array na memória.
  *
  * Rode com: npm run inspect-cotahist [ano]
  */
 require("dotenv").config();
-const fs = require("fs");
-const path = require("path");
-const AdmZip = require("adm-zip");
+const unzipper = require("unzipper");
+const readline = require("readline");
 
-const TMP_DIR = path.join(__dirname, "..", "..", "tmp");
-
-// Candidatos de URL — a B3 não documenta isso num link direto e
-// estável (o portal deles é uma página em JavaScript), então testamos
-// o padrão mais usado por ferramentas open-source há mais de uma
-// década. Se o primeiro falhar, tentamos o próximo.
 function buildCandidateUrls(year) {
   return [
     `https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_A${year}.ZIP`,
     `https://arquivos.b3.com.br/rendafixa/renda-variavel/COTAHIST_A${year}.ZIP`,
-    `https://www.b3.com.br/pesquisapregao/download?filelist=COTAHIST_A${year}.ZIP`,
   ];
 }
 
@@ -32,21 +26,15 @@ async function tryDownload(url) {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; InsideBR/1.0)" },
   });
   console.log(`  Status: ${response.status} ${response.statusText}`);
-  console.log(`  Content-Type: ${response.headers.get("content-type")}`);
   if (!response.ok) return null;
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  console.log(`  Tamanho: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
+  console.log(`  Tamanho comprimido: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
 
-  // Confere se realmente é um ZIP (assinatura "PK") — às vezes um
-  // link errado devolve uma página HTML de erro com status 200.
   if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4b) {
-    console.log("  ⚠️  Não parece ser um arquivo ZIP de verdade (sem assinatura PK).");
-    console.log("  Primeiros 300 caracteres da resposta:");
-    console.log("  " + buffer.toString("utf-8", 0, 300).replace(/\n/g, " "));
+    console.log("  ⚠️  Não parece ser um ZIP de verdade.");
     return null;
   }
-
   return buffer;
 }
 
@@ -54,12 +42,12 @@ async function main() {
   const year = process.argv[2] || new Date().getFullYear() - 1;
   const candidates = buildCandidateUrls(year);
 
-  let buffer = null;
+  let zipBuffer = null;
   let usedUrl = null;
   for (const url of candidates) {
     try {
-      buffer = await tryDownload(url);
-      if (buffer) {
+      zipBuffer = await tryDownload(url);
+      if (zipBuffer) {
         usedUrl = url;
         break;
       }
@@ -68,108 +56,101 @@ async function main() {
     }
   }
 
-  if (!buffer) {
-    console.log("\n❌ Nenhuma das URLs candidatas funcionou.");
-    console.log("Preciso que você confirme a URL certa — abre esse link no navegador,");
-    console.log("baixa o arquivo do ano manualmente, e me diz qual foi o link real:");
-    console.log("https://www.b3.com.br/pt_br/market-data-e-indices/servicos-de-dados/market-data/historico/mercado-a-vista/cotacoes-historicas/");
+  if (!zipBuffer) {
+    console.log("\n❌ Nenhuma URL funcionou.");
     return;
   }
+  console.log(`\n✅ Baixado de: ${usedUrl}`);
 
-  console.log(`\n✅ Sucesso com: ${usedUrl}`);
-
-  if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
-  const zipPath = path.join(TMP_DIR, `cotahist_${year}.zip`);
-  fs.writeFileSync(zipPath, buffer);
-
-  const zip = new AdmZip(zipPath);
-  const entries = zip.getEntries();
+  // unzipper.Open.buffer só lê o INDICE do zip (não descompacta nada
+  // ainda) — a descompactação de verdade só acontece quando chamamos
+  // .stream(), e isso sai como um fluxo, não um buffer gigante.
+  const directory = await unzipper.Open.buffer(zipBuffer);
   console.log(`\nArquivos dentro do zip:`);
-  entries.forEach((e) => console.log(`  - ${e.entryName} (${(e.header.size / 1024 / 1024).toFixed(1)} MB)`));
+  directory.files.forEach((f) =>
+    console.log(`  - ${f.path} (${(f.uncompressedSize / 1024 / 1024).toFixed(1)} MB descompactado)`)
+  );
 
-  const txtEntry = entries.find((e) => e.entryName.toUpperCase().includes("COTAHIST"));
-  if (!txtEntry) {
+  const txtFile = directory.files.find((f) => f.path.toUpperCase().includes("COTAHIST"));
+  if (!txtFile) {
     console.log("Não achei um arquivo COTAHIST dentro do zip.");
     return;
   }
 
-  // O arquivo descompactado tem centenas de MB (tem TODOS os ativos da
-  // B3: ações, opções, termo, ETFs, FIIs...) — nunca carrega ele inteiro
-  // como string de uma vez (`.toString()` + `.split("\n")` trava/estoura
-  // memória). Em vez disso, lê direto do Buffer, linha por linha, sem
-  // nunca materializar o arquivo inteiro como array de strings.
-  const rawBuffer = zip.readFile(txtEntry);
-  console.log(`\nTamanho do arquivo descomprimido: ${(rawBuffer.length / 1024 / 1024).toFixed(1)} MB`);
+  const stream = txtFile.stream();
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
-  // Cada linha tem 245 caracteres + quebra de linha. Acha o primeiro \n
-  // pra saber se é CRLF (247 bytes) ou só LF (246 bytes) por linha.
-  const firstNewline = rawBuffer.indexOf(0x0a); // \n
-  const lineLength = firstNewline + 1; // inclui a quebra de linha
-  console.log(`Tamanho de cada linha (com quebra): ${lineLength} bytes`);
+  let lineCount = 0;
+  let firstLine = null;
+  let secondLine = null;
+  let lastLine = null;
+  let petr4Line = null;
+  let sampledCount = 0;
+  let bdi02Count = 0;
+  const SAMPLE_STEP = 47; // número "estranho" de propósito, pra amostrar sem viés
 
-  function readLine(index) {
-    const start = index * lineLength;
-    return rawBuffer.toString("latin1", start, start + 245);
-  }
+  for await (const line of rl) {
+    lineCount++;
+    if (lineCount === 1) firstLine = line;
+    if (lineCount === 2) secondLine = line;
+    lastLine = line;
 
-  const totalLines = Math.floor(rawBuffer.length / lineLength);
-  console.log(`Total de linhas (estimado): ${totalLines.toLocaleString("pt-BR")}`);
+    if (lineCount % SAMPLE_STEP === 0 && line.length >= 12) {
+      sampledCount++;
+      if (line.slice(10, 12) === "02") bdi02Count++;
+    }
 
-  console.log(`\n--- Linha 1 (HEADER, tipo 00) ---`);
-  console.log(readLine(0));
-
-  console.log(`\n--- Linha 2 (primeira cotação, tipo 01) ---`);
-  const l = readLine(1);
-  console.log(l);
-
-  console.log(`\n--- Última linha (TRAILER, tipo 99) ---`);
-  console.log(readLine(totalLines - 1));
-
-  // Conta quantas linhas são do "lote padrão" (BDI=02) — o que
-  // realmente nos interessa, o resto é opção/termo/outros mercados que
-  // vamos descartar na ingestão de verdade.
-  let countBdi02 = 0;
-  const sampleStep = Math.max(1, Math.floor(totalLines / 200000)); // amostra, não conta tudo
-  let sampled = 0;
-  for (let i = 1; i < totalLines - 1; i += sampleStep) {
-    const bdi = rawBuffer.toString("latin1", i * lineLength + 10, i * lineLength + 12);
-    if (bdi === "02") countBdi02++;
-    sampled++;
-  }
-  console.log(`\nAmostra: ${sampled.toLocaleString("pt-BR")} linhas verificadas, ${countBdi02.toLocaleString("pt-BR")} são BDI=02 (lote padrão) — ${((countBdi02 / sampled) * 100).toFixed(1)}%`);
-
-  // Recorte de campos conhecidos da linha 2, pra conferir se as
-  // posições batem com o layout oficial da B3:
-  console.log(`\n--- Campos recortados da linha 2 (conferir se fazem sentido) ---`);
-  console.log(`TIPREG (1-2):   "${l.slice(0, 2)}"`);
-  console.log(`DATA (3-10):    "${l.slice(2, 10)}"`);
-  console.log(`CODBDI (11-12): "${l.slice(10, 12)}"`);
-  console.log(`CODNEG (13-24): "${l.slice(12, 24)}"`);
-  console.log(`NOMRES (28-39): "${l.slice(27, 39)}"`);
-  console.log(`PREABE (57-69): "${l.slice(56, 69)}"`);
-  console.log(`PREMAX (70-82): "${l.slice(69, 82)}"`);
-  console.log(`PREMIN (83-95): "${l.slice(82, 95)}"`);
-  console.log(`PREULT (109-121): "${l.slice(108, 121)}"`);
-  console.log(`VOLTOT (171-188): "${l.slice(170, 188)}"`);
-
-  // Acha uma linha de exemplo de uma ação conhecida (PETR4) pra
-  // conferir o recorte numa linha real de ação, não a primeira do
-  // arquivo (que pode ser qualquer papel em ordem alfabética).
-  console.log(`\n--- Procurando uma linha de PETR4 pra conferir... ---`);
-  for (let i = 1; i < totalLines - 1; i++) {
-    const codneg = rawBuffer.toString("latin1", i * lineLength + 12, i * lineLength + 24).trim();
-    if (codneg === "PETR4") {
-      const pl = readLine(i);
-      console.log(pl);
-      console.log(`DATA: "${pl.slice(2, 10)}" | PREABE: "${pl.slice(56, 69)}" | PREULT: "${pl.slice(108, 121)}" | VOLTOT: "${pl.slice(170, 188)}"`);
-      break;
+    if (!petr4Line && line.length >= 24 && line.slice(12, 24).trim() === "PETR4") {
+      petr4Line = line;
     }
   }
 
+  console.log(`\nTotal de linhas processadas: ${lineCount.toLocaleString("pt-BR")}`);
+
+  console.log(`\n--- Linha 1 (HEADER, tipo 00) ---`);
+  console.log(firstLine);
+  console.log(`Tamanho: ${firstLine?.length} caracteres`);
+
+  console.log(`\n--- Linha 2 (primeira cotação, tipo 01) ---`);
+  console.log(secondLine);
+
+  console.log(`\n--- Última linha (TRAILER, tipo 99) ---`);
+  console.log(lastLine);
+
+  console.log(
+    `\nAmostra: ${sampledCount.toLocaleString("pt-BR")} linhas checadas, ${bdi02Count.toLocaleString("pt-BR")} são BDI=02 (lote padrão) — ${((bdi02Count / sampledCount) * 100).toFixed(1)}%`
+  );
+
+  if (secondLine) {
+    console.log(`\n--- Campos recortados da linha 2 ---`);
+    console.log(`TIPREG (1-2):   "${secondLine.slice(0, 2)}"`);
+    console.log(`DATA (3-10):    "${secondLine.slice(2, 10)}"`);
+    console.log(`CODBDI (11-12): "${secondLine.slice(10, 12)}"`);
+    console.log(`CODNEG (13-24): "${secondLine.slice(12, 24)}"`);
+    console.log(`NOMRES (28-39): "${secondLine.slice(27, 39)}"`);
+    console.log(`PREABE (57-69): "${secondLine.slice(56, 69)}"`);
+    console.log(`PREMAX (70-82): "${secondLine.slice(69, 82)}"`);
+    console.log(`PREMIN (83-95): "${secondLine.slice(82, 95)}"`);
+    console.log(`PREULT (109-121): "${secondLine.slice(108, 121)}"`);
+    console.log(`VOLTOT (171-188): "${secondLine.slice(170, 188)}"`);
+  }
+
+  if (petr4Line) {
+    console.log(`\n--- Linha de exemplo (PETR4) ---`);
+    console.log(petr4Line);
+    console.log(
+      `DATA: "${petr4Line.slice(2, 10)}" | PREABE: "${petr4Line.slice(56, 69)}" | PREULT: "${petr4Line.slice(108, 121)}" | VOLTOT: "${petr4Line.slice(170, 188)}"`
+    );
+  } else {
+    console.log(`\nNão encontrei nenhuma linha de PETR4 nesse arquivo.`);
+  }
+
   console.log(`\n${"=".repeat(60)}`);
-  console.log("PRÓXIMO PASSO: me manda essa saída inteira, vou usar pra");
-  console.log("confirmar as posições dos campos e escrever o parser definitivo.");
+  console.log("PRÓXIMO PASSO: me manda essa saída inteira.");
   console.log("=".repeat(60));
 }
 
-main();
+main().catch((err) => {
+  console.error("Erro:", err.message);
+  process.exit(1);
+});
