@@ -681,6 +681,27 @@ app.get("/api/debug/tickers-with-trailing-f", async (req, res) => {
 
 // TEMPORÁRIO — lista empresas com programa de recompra em andamento,
 // pra facilitar testar no app.
+// TEMPORÁRIO — confere quantos registros de preço existem pra um ticker.
+app.get("/api/debug/price-check/:ticker", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT COUNT(*) AS total, MIN(trade_date) AS primeira, MAX(trade_date) AS ultima
+      FROM price_history
+      WHERE ticker = $1
+      `,
+      [req.params.ticker.toUpperCase()]
+    );
+    const sampleResult = await pool.query(
+      "SELECT trade_date, close FROM price_history WHERE ticker = $1 ORDER BY trade_date DESC LIMIT 3",
+      [req.params.ticker.toUpperCase()]
+    );
+    res.json({ ticker: req.params.ticker.toUpperCase(), ...result.rows[0], amostra: sampleResult.rows });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/debug/buyback-vigente", async (req, res) => {
   try {
     const result = await pool.query(
