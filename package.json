@@ -18,6 +18,7 @@
     "inspect-vlmo-full": "node src/ingest/inspectVlmoFull.js",
     "inspect-vlmo-saldos": "node src/ingest/inspectVlmoSaldos.js",
     "ingest-positions": "node src/ingest/fetchVlmoPositions.js",
+    "inspect-dfp": "node src/ingest/inspectDFP.js",
     "ingest-cotahist": "node src/ingest/fetchCotahist.js",
     "ingest-events": "node src/ingest/fetchEvents.js",
     "ingest-fre": "node src/ingest/fetchFRE.js",
