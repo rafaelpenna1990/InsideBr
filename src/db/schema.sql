@@ -118,6 +118,25 @@ CREATE TABLE IF NOT EXISTS insider_positions (
 CREATE INDEX IF NOT EXISTS idx_insider_positions_company ON insider_positions(company_id);
 CREATE INDEX IF NOT EXISTS idx_insider_positions_holder ON insider_positions(holder_name);
 
+-- Linhas das demonstrações financeiras padronizadas (DFP) — só as
+-- contas FIXAS (padronizadas pela CVM, iguais pra todo mundo), do ano
+-- mais recente disponível. Começa com DRE/BPA/BPP; DFC, DMPL e DVA
+-- ficam pra depois se fizer falta.
+CREATE TABLE IF NOT EXISTS financial_statements (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER REFERENCES companies(id),
+  statement_type VARCHAR(10),
+  reference_date DATE,
+  period_end DATE,
+  account_code VARCHAR(20),
+  account_description VARCHAR(255),
+  value NUMERIC,
+  raw_hash VARCHAR(64) UNIQUE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_financial_statements_company ON financial_statements(company_id);
+
 CREATE TABLE IF NOT EXISTS corporate_events (
   id SERIAL PRIMARY KEY,
   company_id INTEGER REFERENCES companies(id),
