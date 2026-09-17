@@ -11,6 +11,7 @@
     "inspect-recompra": "node src/ingest/inspectRecompra.js",
     "inspect-ipe": "node src/ingest/inspectIPE.js",
     "inspect-fre": "node src/ingest/inspectFRE.js",
+    "inspect-cotahist": "node src/ingest/inspectCotahist.js",
     "ingest-events": "node src/ingest/fetchEvents.js",
     "ingest-fre": "node src/ingest/fetchFRE.js",
     "ingest": "node src/ingest/fetchVlmo.js",
