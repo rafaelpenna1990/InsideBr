@@ -72,6 +72,34 @@ CREATE TABLE IF NOT EXISTS buyback_programs (
 
 CREATE INDEX IF NOT EXISTS idx_buyback_programs_company ON buyback_programs(company_id);
 
+-- Processos Administrativos Sancionadores da CVM. O dado da CVM não
+-- tem CNPJ, só nome do acusado (pode ser pessoa OU empresa) — por
+-- isso company_id fica NULL quando não achamos correspondência exata
+-- de nome; o processo ainda fica registrado, só sem vínculo direto.
+CREATE TABLE IF NOT EXISTS sanctioning_processes (
+  nup VARCHAR(30) PRIMARY KEY,
+  subject TEXT,
+  summary TEXT,
+  opened_date DATE,
+  current_phase VARCHAR(100),
+  current_subphase TEXT,
+  last_movement_date DATE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sanctioning_process_accused (
+  id SERIAL PRIMARY KEY,
+  nup VARCHAR(30) REFERENCES sanctioning_processes(nup),
+  company_id INTEGER REFERENCES companies(id),
+  accused_name VARCHAR(255),
+  situation TEXT,
+  situation_date DATE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sanctioning_accused_company ON sanctioning_process_accused(company_id);
+CREATE INDEX IF NOT EXISTS idx_sanctioning_accused_nup ON sanctioning_process_accused(nup);
+
 CREATE TABLE IF NOT EXISTS corporate_events (
   id SERIAL PRIMARY KEY,
   company_id INTEGER REFERENCES companies(id),
