@@ -24,6 +24,7 @@
     "pg": "^8.12.0",
     "dotenv": "^16.4.5",
     "adm-zip": "^0.5.14",
+    "unzipper": "^0.12.3",
     "csv-parse": "^5.5.6",
     "fast-xml-parser": "^4.5.0"
   },
