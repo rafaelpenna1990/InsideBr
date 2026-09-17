@@ -16,6 +16,7 @@
     "inspect-sancionador": "node src/ingest/inspectSancionador.js",
     "ingest-sancionador": "node src/ingest/fetchSancionador.js",
     "inspect-vlmo-full": "node src/ingest/inspectVlmoFull.js",
+    "inspect-vlmo-saldos": "node src/ingest/inspectVlmoSaldos.js",
     "ingest-cotahist": "node src/ingest/fetchCotahist.js",
     "ingest-events": "node src/ingest/fetchEvents.js",
     "ingest-fre": "node src/ingest/fetchFRE.js",
