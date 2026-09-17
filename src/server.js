@@ -593,6 +593,36 @@ app.get("/api/debug/company/:cnpj", async (req, res) => {
   }
 });
 
+// TEMPORÁRIO — acha tickers usados por mais de uma empresa (sinal de
+// mapeamento errado) e confirma os totais.
+app.get("/api/debug/ticker-counts", async (req, res) => {
+  try {
+    const totalResult = await pool.query(
+      "SELECT COUNT(*) AS total FROM companies WHERE ticker IS NOT NULL"
+    );
+    const distinctResult = await pool.query(
+      "SELECT COUNT(DISTINCT ticker) AS distinct_count FROM companies WHERE ticker IS NOT NULL"
+    );
+    const duplicatesResult = await pool.query(
+      `
+      SELECT ticker, COUNT(*) AS count, ARRAY_AGG(name) AS companies
+      FROM companies
+      WHERE ticker IS NOT NULL
+      GROUP BY ticker
+      HAVING COUNT(*) > 1
+      ORDER BY count DESC
+      `
+    );
+    res.json({
+      totalWithTicker: Number(totalResult.rows[0].total),
+      distinctTickers: Number(distinctResult.rows[0].distinct_count),
+      duplicates: duplicatesResult.rows,
+    });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/debug/ls", async (req, res) => {
   try {
     const fs = require("fs");
