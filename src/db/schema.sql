@@ -115,6 +115,13 @@ CREATE TABLE IF NOT EXISTS controlling_shareholders (
 
 CREATE INDEX IF NOT EXISTS idx_controlling_company ON controlling_shareholders(company_id);
 
+CREATE TABLE IF NOT EXISTS ingest_status (
+  id INTEGER PRIMARY KEY DEFAULT 1,
+  last_checked_at TIMESTAMP,
+  last_success BOOLEAN,
+  CONSTRAINT single_row CHECK (id = 1)
+);
+
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
