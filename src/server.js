@@ -82,6 +82,36 @@ async function getMarketQuotes() {
 const historyCache = new Map();
 const HISTORY_CACHE_TTL_MS = 15 * 60 * 1000;
 
+// Histórico de preço completo (2020 em diante), do NOSSO banco — sem o
+// limite de 3 meses da brapi. Formato compatível com o que o app já
+// espera (date em unix, close, volume).
+app.get("/api/companies/price-history/:ticker", cacheMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT trade_date, open, high, low, close, volume
+      FROM price_history
+      WHERE ticker = $1
+      ORDER BY trade_date ASC
+      `,
+      [req.params.ticker.toUpperCase()]
+    );
+
+    const points = result.rows.map((r) => ({
+      date: Math.floor(new Date(r.trade_date).getTime() / 1000),
+      open: r.open != null ? Number(r.open) : null,
+      high: r.high != null ? Number(r.high) : null,
+      low: r.low != null ? Number(r.low) : null,
+      close: r.close != null ? Number(r.close) : null,
+      volume: r.volume != null ? Number(r.volume) : null,
+    }));
+
+    res.json({ points });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/market/history/:ticker", async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
 
