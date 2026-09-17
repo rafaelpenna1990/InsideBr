@@ -19,6 +19,7 @@
     "map-tickers": "node src/ingest/mapTickers.js",
     "fix-tickers": "node src/db/fixTickers.js",
     "fix-tickers-cnpj": "node src/db/cnpjTickerFix.js",
+    "revert-ticker-overwrites": "node src/db/revertBadOverwrites.js",
     "migrate": "node src/db/migrate.js"
   },
   "dependencies": {
