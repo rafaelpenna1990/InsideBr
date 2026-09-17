@@ -76,6 +76,12 @@ async function main() {
     return;
   }
 
+  console.log(`\n✅ Sucesso com: ${usedUrl}`);
+
+  if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+  const zipPath = path.join(TMP_DIR, `cotahist_${year}.zip`);
+  fs.writeFileSync(zipPath, buffer);
+
   const zip = new AdmZip(zipPath);
   const entries = zip.getEntries();
   console.log(`\nArquivos dentro do zip:`);
