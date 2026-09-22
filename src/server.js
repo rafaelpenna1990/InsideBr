@@ -1142,7 +1142,7 @@ app.get("/api/feed", async (req, res) => {
         FROM transactions t
         JOIN companies c ON c.id = t.company_id
         WHERE ${txConditions.join(" AND ")}
-        ORDER BY t.transaction_date DESC NULLS LAST
+        ORDER BY t.transaction_date DESC NULLS LAST, t.id DESC
         LIMIT 500
         `,
         txParams
@@ -1170,7 +1170,7 @@ app.get("/api/feed", async (req, res) => {
         FROM corporate_events e
         JOIN companies c ON c.id = e.company_id
         WHERE ${eventConditions.join(" AND ")}
-        ORDER BY e.filed_date DESC NULLS LAST
+        ORDER BY e.filed_date DESC NULLS LAST, e.id DESC
         LIMIT 500
         `,
         eventParams
