@@ -96,7 +96,7 @@ async function main() {
   const idf = buildIdfWeights(tickers.map((t) => t.name || ""));
 
   const client = await pool.connect();
-  const HIGH_CONFIDENCE = 0.55;
+  const HIGH_CONFIDENCE = 0.85;
   const MEDIUM_CONFIDENCE = 0.3;
 
   const autoMapped = [];
@@ -104,10 +104,6 @@ async function main() {
   const noMatch = [];
 
   try {
-    // Reseta tickers de uma rodada anterior (o algoritmo mudou, então
-    // qualquer mapeamento antigo pode estar errado e precisa ser refeito).
-    await client.query("UPDATE companies SET ticker = NULL");
-
     const { rows: companies } = await client.query(
       "SELECT id, name, ticker FROM companies WHERE ticker IS NULL"
     );
