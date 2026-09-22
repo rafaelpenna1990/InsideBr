@@ -1235,6 +1235,20 @@ app.get("/api/feed", async (req, res) => {
     };
     items.sort(sorters[sort] || sorters.recent);
 
+    // Pra ordenações que não são "recente", uma empresa com muitas
+    // negociações (todas com o mesmo score, por exemplo) pode tomar
+    // conta sozinha da página inteira — o app já agrupa por ticker de
+    // qualquer forma, então aqui mantém só a negociação mais forte de
+    // cada empresa antes de paginar, garantindo diversidade real.
+    if (sort !== "recent") {
+      const seenTickers = new Set();
+      items = items.filter((item) => {
+        if (seenTickers.has(item.ticker)) return false;
+        seenTickers.add(item.ticker);
+        return true;
+      });
+    }
+
     const total = items.length;
     const page = items.slice(offset, offset + limit);
 
