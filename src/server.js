@@ -2500,6 +2500,92 @@ app.get("/api/companies/:cnpj/summary", async (req, res) => {
   }
 });
 
+// Política de privacidade — exigida pela App Store e Google Play.
+// Página estática simples, servida direto daqui (sem depender do
+// site publicado separadamente).
+app.get("/privacy", (req, res) => {
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InsideBR — Política de Privacidade</title>
+<style>
+  body { background:#010815; color:#F4F7F5; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 720px; margin: 0 auto; padding: 32px 20px 80px; line-height: 1.6; }
+  h1 { font-size: 26px; font-weight: 800; }
+  h2 { font-size: 18px; font-weight: 700; margin-top: 36px; color: #08B77A; }
+  p, li { color: #D6DBD6; font-size: 15px; }
+  a { color: #08B77A; }
+  .updated { color: #8C9A94; font-size: 13px; margin-bottom: 32px; }
+</style>
+</head>
+<body>
+  <h1>Política de Privacidade do InsideBR</h1>
+  <p class="updated">Última atualização: 22 de setembro de 2026</p>
+
+  <p>O InsideBR é um aplicativo que agrega e organiza dados públicos sobre negociações de
+  insiders (diretores, conselheiros e acionistas controladores) e informações financeiras
+  de companhias abertas brasileiras, com base em dados publicados pela Comissão de Valores
+  Mobiliários (CVM) e pela B3. Esta política explica quais dados o InsideBR coleta e como
+  eles são usados.</p>
+
+  <h2>O que o InsideBR NÃO coleta</h2>
+  <p>O InsideBR não exige cadastro, login ou conta de usuário. Não coletamos nome, e-mail,
+  CPF, dados bancários ou qualquer informação que identifique pessoalmente quem usa o app.
+  Não vendemos, alugamos ou compartilhamos dados com terceiros para fins de publicidade.
+  O app não exibe anúncios.</p>
+
+  <h2>O que o InsideBR coleta</h2>
+  <ul>
+    <li><strong>Token de notificação push</strong> (se você ativar notificações): um
+    identificador técnico do seu dispositivo, gerado pelo Expo/Apple/Google, usado
+    exclusivamente para enviar os alertas que você configurar dentro do app. Esse token não
+    contém informação pessoal e não é vinculado ao seu nome ou e-mail.</li>
+    <li><strong>Lista de empresas que você segue</strong> (favoritos): armazenada vinculada
+    ao token do seu dispositivo, usada só pra mostrar suas empresas favoritas e decidir
+    quando te avisar sobre elas.</li>
+    <li><strong>Preferências de alerta</strong>: quais tipos de evento você quer ser
+    avisado (novo evento, cluster de insiders, sinal de atenção).</li>
+  </ul>
+
+  <h2>Dados de mercado exibidos no app</h2>
+  <p>Todo dado sobre negociações de insiders, fatos relevantes, demonstrações financeiras,
+  recompra de ações e processos sancionadores vem de fontes públicas oficiais (CVM e B3),
+  reutilizadas sob licença de dados abertos. Cotações de preço também têm origem pública
+  (B3) ou de provedores de mercado (brapi.dev). Notícias exibidas no app vêm do Google News
+  e pertencem aos respectivos veículos de imprensa.</p>
+
+  <h2>Terceiros envolvidos</h2>
+  <ul>
+    <li><strong>Expo/Apple/Google</strong>: infraestrutura de envio de notificações push.</li>
+    <li><strong>brapi.dev</strong>: provedor de cotações de mercado em tempo real.</li>
+    <li><strong>Render</strong>: hospedagem do nosso servidor e banco de dados.</li>
+  </ul>
+  <p>Nenhum desses terceiros recebe dado pessoal seu através do InsideBR — só o token
+  técnico do dispositivo, quando aplicável.</p>
+
+  <h2>Seus direitos</h2>
+  <p>Como não coletamos dado pessoal identificável, não há perfil de usuário pra acessar,
+  corrigir ou excluir. Se quiser parar de receber notificações, basta desativar isso nas
+  configurações do app ou do seu celular — isso remove o token associado.</p>
+
+  <h2>Não é recomendação de investimento</h2>
+  <p>O InsideBR é uma ferramenta informativa. Nenhum conteúdo do app — score, sinal, alerta
+  ou análise — constitui recomendação de compra, venda ou manutenção de qualquer ativo
+  financeiro. Decisões de investimento são de responsabilidade exclusiva do usuário.</p>
+
+  <h2>Alterações nesta política</h2>
+  <p>Podemos atualizar esta política conforme o app evolui. A data no topo desta página
+  sempre reflete a versão mais recente.</p>
+
+  <h2>Contato</h2>
+  <p>Dúvidas sobre esta política: entre em contato através do e-mail informado na ficha do
+  aplicativo na App Store ou Google Play.</p>
+</body>
+</html>`);
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`InsideBR API rodando em http://localhost:${PORT}`);
