@@ -696,6 +696,22 @@ app.get("/api/debug/tickers-with-trailing-f", async (req, res) => {
 // TEMPORÁRIO — lista empresas com programa de recompra em andamento,
 // pra facilitar testar no app.
 // TEMPORÁRIO — confere quantos registros de preço existem pra um ticker.
+// TEMPORÁRIO — confere quão recente é o dado de negociação (VLMO) e
+// quando foi a última ingestão.
+app.get("/api/debug/transactions-freshness", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT MAX(transaction_date) AS ultima_negociacao, MAX(filed_date) AS ultima_declaracao, COUNT(*) AS total FROM transactions"
+    );
+    const statusResult = await pool.query(
+      "SELECT last_checked_at, last_success FROM ingest_status ORDER BY id DESC LIMIT 1"
+    );
+    res.json({ ...result.rows[0], ingestStatus: statusResult.rows[0] || null });
+  } catch (err) {
+    res.status(500).json({ status: "erro", message: err.message });
+  }
+});
+
 app.get("/api/debug/price-check/:ticker", async (req, res) => {
   try {
     const result = await pool.query(
@@ -1683,7 +1699,7 @@ app.get("/api/companies/:cnpj/financials", cacheMiddleware, async (req, res) => 
 
     const rowsResult = await pool.query(
       `
-      SELECT statement_type, reference_date, period_end, account_code, account_description, value
+      SELECT statement_type, reference_date, account_code, account_description, value
       FROM financial_statements
       WHERE company_id = $1
       ORDER BY reference_date DESC
@@ -1694,38 +1710,44 @@ app.get("/api/companies/:cnpj/financials", cacheMiddleware, async (req, res) => 
       return res.json({ available: false });
     }
 
-    const referenceDate = rowsResult.rows[0].reference_date;
-    const rows = rowsResult.rows.filter(
-      (r) => r.reference_date.getTime() === referenceDate.getTime()
-    );
-
     // Pega a linha de nível mais alto (código de conta mais curto) que
-    // bate com o rótulo procurado — é o jeito mais confiável de achar
-    // "o total" sem depender de um código de conta específico, que
-    // varia entre banco, seguradora e empresa comum.
-    function findTopLine(statementType, pattern) {
-      const candidates = rows.filter(
-        (r) =>
-          r.statement_type === statementType &&
-          pattern.test(r.account_description || "")
+    // bate com o rótulo procurado — mais confiável que um código fixo,
+    // que varia entre banco, seguradora e empresa comum.
+    function findTopLine(rowsForYear, statementType, pattern) {
+      const candidates = rowsForYear.filter(
+        (r) => r.statement_type === statementType && pattern.test(r.account_description || "")
       );
       if (candidates.length === 0) return null;
       candidates.sort((a, b) => a.account_code.length - b.account_code.length);
       return Number(candidates[0].value);
     }
 
-    const revenue = findTopLine("DRE", /receita/i);
-    const netIncome = findTopLine("DRE", /lucro.*l[ií]quido|resultado.*l[ií]quido/i);
-    const totalAssets = findTopLine("BPA", /ativo total/i);
-    const equity = findTopLine("BPP", /patrim[oô]nio l[ií]quido/i);
+    // Agrupa por ano (reference_date) — um item por ano disponível.
+    const byYear = new Map();
+    for (const row of rowsResult.rows) {
+      const key = row.reference_date.getTime();
+      if (!byYear.has(key)) byYear.set(key, []);
+      byYear.get(key).push(row);
+    }
+
+    const years = [...byYear.entries()]
+      .sort((a, b) => b[0] - a[0])
+      .map(([, rowsForYear]) => ({
+        referenceDate: rowsForYear[0].reference_date,
+        revenue: findTopLine(rowsForYear, "DRE", /receita/i),
+        netIncome: findTopLine(rowsForYear, "DRE", /lucro.*l[ií]quido|resultado.*l[ií]quido/i),
+        totalAssets: findTopLine(rowsForYear, "BPA", /ativo total/i),
+        equity: findTopLine(rowsForYear, "BPP", /patrim[oô]nio l[ií]quido/i),
+      }));
 
     res.json({
       available: true,
-      referenceDate,
-      revenue,
-      netIncome,
-      totalAssets,
-      equity,
+      referenceDate: years[0].referenceDate,
+      revenue: years[0].revenue,
+      netIncome: years[0].netIncome,
+      totalAssets: years[0].totalAssets,
+      equity: years[0].equity,
+      years,
     });
   } catch (err) {
     res.status(500).json({ status: "erro", message: err.message });
