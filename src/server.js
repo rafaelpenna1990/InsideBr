@@ -570,7 +570,7 @@ async function getCompanyScores(companyIds) {
     FROM transactions
     WHERE operation_type IN ('buy', 'sell')
       AND company_id = ANY($1::int[])
-      AND transaction_date >= (CURRENT_DATE - 21)
+      AND transaction_date >= ((SELECT MAX(transaction_date) FROM transactions) - 21)
       AND role_category != 'Controlador ou Vinculado'
     `,
     [companyIds]
@@ -968,7 +968,7 @@ async function sendWatchlistNotifications(since) {
         SUM(CASE WHEN operation_type = 'sell' THEN total_value ELSE 0 END) AS sold
       FROM transactions
       WHERE company_id = $1
-        AND transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+        AND transaction_date >= ((SELECT MAX(transaction_date) FROM transactions) - INTERVAL '12 months')
         AND role_category != 'Controlador ou Vinculado'
       `,
       [companyId]
@@ -1447,7 +1447,7 @@ app.get("/api/radar", async (req, res) => {
       SELECT company_id, role_category, total_value, quantity, transaction_date
       FROM transactions
       WHERE operation_type = 'buy'
-        AND transaction_date >= (CURRENT_DATE - $1::int)
+        AND transaction_date >= ((SELECT MAX(transaction_date) FROM transactions) - $1::int)
       `,
       [windowDays]
     );
@@ -1821,7 +1821,7 @@ app.get("/api/companies-with-attention", async (req, res) => {
         SUM(CASE WHEN operation_type = 'buy' THEN total_value ELSE 0 END) AS bought,
         SUM(CASE WHEN operation_type = 'sell' THEN total_value ELSE 0 END) AS sold
       FROM transactions
-      WHERE transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+      WHERE transaction_date >= ((SELECT MAX(transaction_date) FROM transactions) - INTERVAL '12 months')
         AND role_category != 'Controlador ou Vinculado'
       GROUP BY company_id
       `
@@ -1917,7 +1917,7 @@ app.get("/api/companies/:cnpj/signals-panel", cacheMiddleware, async (req, res) 
         SUM(CASE WHEN operation_type = 'sell' THEN quantity ELSE 0 END) AS sold_qty
       FROM transactions
       WHERE company_id = $1
-        AND transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+        AND transaction_date >= ((SELECT MAX(transaction_date) FROM transactions) - INTERVAL '12 months')
         AND role_category != 'Controlador ou Vinculado'
       `,
       [companyId]
@@ -1989,7 +1989,7 @@ app.get("/api/companies/:cnpj/signals-panel", cacheMiddleware, async (req, res) 
         SELECT operation_type, total_value, quantity, transaction_date, role_category
         FROM transactions
         WHERE company_id = $1
-          AND transaction_date >= (CURRENT_DATE - INTERVAL '12 months')
+          AND transaction_date >= ((SELECT MAX(transaction_date) FROM transactions) - INTERVAL '12 months')
           AND role_category != 'Controlador ou Vinculado'
         ORDER BY total_value DESC NULLS LAST
         LIMIT 5
@@ -2366,7 +2366,9 @@ app.get("/api/companies/:cnpj/score", cacheMiddleware, async (req, res) => {
         FROM transactions
         WHERE company_id = $1
           AND operation_type = $2
-          AND transaction_date >= (CURRENT_DATE - $3::int)
+          AND transaction_date >= (
+            (SELECT MAX(transaction_date) FROM transactions) - $3::int
+          )
           AND role_category != 'Controlador ou Vinculado'
         `,
         [company.id, operationType, windowDays]
